@@ -1,0 +1,2 @@
+# fanyi
+Translator extension
