@@ -28,7 +28,7 @@ const FIXTURE = `
         window.__sent.push(message);
         if (window.__delay) await new Promise((resolve) => setTimeout(resolve, window.__delay));
         if (message.type !== "TRANSLATE_TEXTS") return;
-        if (window.__failText && message.texts.some((text) => text.startsWith(window.__failText))) throw new Error("request failed on purpose");
+        if (window.__failAll || (window.__failText && message.texts.some((text) => text.startsWith(window.__failText)))) throw new Error("request failed on purpose");
         const reply = () => ({ ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) });
         if (!window.__holdRequests) return reply();
         return new Promise((resolve, reject) => window.__pending.push({ texts: message.texts, resolve: () => resolve(reply()), reject: () => reject(new Error("held request failed")) }));
@@ -581,6 +581,34 @@ describe("translation settings in a real page", () => {
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
     expect(await page.evaluate("document.title")).toBe(longTitle);
     await page.evaluate("document.title = 'Hello world'; __updateSettings({ maxCharsPerRequest: 2000 })");
+  });
+
+  it("keeps translating later batches after one batch fails and leaves failures out of the count", async () => {
+    await page.evaluate("window.__failText = 'The paragraph that follows'; window.__sent.length = 0");
+    await page.evaluate("__restart()");
+    await settled();
+    expect(await page.evaluate("document.querySelector('#flex .fanyi-translation, #flex + .fanyi-translation')?.dataset.error")).toBe("true");
+    expect(await page.evaluate("document.querySelectorAll('#next .fanyi-translation, #next + .fanyi-translation').length")).toBe(0);
+    expect(await translation("settle")).toMatchObject({ text: "请仔细阅读安装与配置的完整说明。" });
+    expect(await translation("sidediv")).toMatchObject({ text: "译文 Sidebar div text." });
+    expect(await page.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: IDS.length - 4 });
+    expect(await page.evaluate("document.querySelectorAll('[data-fanyi-processed]').length")).toBe(IDS.length);
+    expect(await page.evaluate("document.querySelector('.fanyi-progress-toast')?.textContent")).toBe("4 个段落翻译失败：request failed on purpose");
+    await page.evaluate("window.__failText = null; __toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+  });
+
+  it("stops after three consecutive failed batches and hands the rest back for a retry", async () => {
+    await page.evaluate("window.__failAll = true; window.__sent.length = 0; __updateSettings({ translateTitle: false })");
+    await page.evaluate("__restart()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation[data-error]").length === 3 && !document.querySelector(".fanyi-translation[data-loading]"));
+    await page.waitForTimeout(200);
+    expect(await page.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length")).toBe(3);
+    expect(await page.evaluate("document.querySelectorAll('[data-fanyi-processed]').length")).toBe(12);
+    expect(await page.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: 0 });
+    await page.evaluate("window.__failAll = false; __toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__updateSettings({ translateTitle: true })");
   });
 });
 

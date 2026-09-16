@@ -6,6 +6,7 @@ const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, t
 const TEXT_SELECTOR = "div, span, a, dt, label, summary, small, strong, em, b, i";
 const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
 const MAX_PAGE_BLOCKS = 1000;
+const MAX_CONSECUTIVE_FAILURES = 3;
 const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
 
 interface Paragraph {
@@ -57,7 +58,7 @@ function pageState(): PageStateResponse {
     active,
     translating,
     supported,
-    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading])").length,
+    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading]):not([data-error])").length,
   };
 }
 
@@ -232,6 +233,9 @@ async function drainQueue(announce: boolean): Promise<void> {
   translating = true;
   const currentGeneration = generation;
   let done = 0;
+  let failed = 0;
+  let failureStreak = 0;
+  let lastFailure = "";
   const toast = announce ? showProgress(`正在翻译 0 / ${queue.length}`) : null;
   notifyState();
 
@@ -245,17 +249,24 @@ async function drainQueue(announce: boolean): Promise<void> {
       placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
       // 真实译文比占位符长，固定高度的原文可能此时才装不下
       placeholders.forEach((placeholder, index) => settleTranslation(batch[index].element, placeholder));
+      failureStreak = 0;
     } catch (error) {
       // 旧轮次的失败不能碰重启后的新队列和新占位符
       if (!active || currentGeneration !== generation) break;
-      const description = error instanceof Error ? error.message : "翻译失败";
-      placeholders.forEach((placeholder, index) => {
-        placeholder.textContent = index === 0 ? `翻译失败：${description}` : "";
-        delete placeholder.dataset.loading;
-      });
-      // 失败批次保留占位符和处理标记；未发出的段落退回未处理状态等下次扫描
-      queue.splice(0).forEach(({ element }) => delete element.dataset.fanyiProcessed);
-      break;
+      lastFailure = error instanceof Error ? error.message : "翻译失败";
+      failed += batch.length;
+      failureStreak += 1;
+      // 失败批次只留第一个占位符展示错误，整批段落保留处理标记，重新开启翻译时再重试
+      const [notice, ...rest] = placeholders;
+      rest.forEach((placeholder) => placeholder.remove());
+      notice.dataset.error = "true";
+      notice.textContent = `翻译失败：${lastFailure}`;
+      delete notice.dataset.loading;
+      // 连续失败多半是密钥或额度问题，停下来避免继续发无效请求；未发出的段落退回未处理状态
+      if (failureStreak >= MAX_CONSECUTIVE_FAILURES) {
+        queue.splice(0).forEach(({ element }) => delete element.dataset.fanyiProcessed);
+        break;
+      }
     }
     done += batch.length;
     if (toast) toast.textContent = `正在翻译 ${done} / ${done + queue.length}`;
@@ -263,6 +274,7 @@ async function drainQueue(announce: boolean): Promise<void> {
 
   if (currentGeneration === generation) translating = false;
   toast?.remove();
+  if (failed && currentGeneration === generation) showNotice(`${failed} 个段落翻译失败：${lastFailure}`);
   notifyState();
 }
 
