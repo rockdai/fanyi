@@ -73,9 +73,16 @@ function canHoldTranslation(source: HTMLElement, translation: HTMLElement): bool
 
 function moveTranslationAfter(source: HTMLElement, translation: HTMLElement): void {
   const style = getComputedStyle(source);
-  for (const property of INHERITED_TEXT_PROPERTIES) translation.style.setProperty(property, style.getPropertyValue(property), "important");
+  const copied = [...INHERITED_TEXT_PROPERTIES];
+  // 原文自带背景时一并带走，否则复制过来的字色可能与父容器背景撞色
+  if (style.backgroundColor !== "rgba(0, 0, 0, 0)" || style.backgroundImage !== "none") copied.push("background", "padding");
+  for (const property of copied) translation.style.setProperty(property, style.getPropertyValue(property), "important");
   translation.style.setProperty("font-size", `calc(${style.fontSize} * var(--fanyi-font-scale, .95))`, "important");
   source.insertAdjacentElement("afterend", translation);
+}
+
+function settleTranslation(source: HTMLElement, translation: HTMLElement): void {
+  if (translation.parentElement === source && !canHoldTranslation(source, translation)) moveTranslationAfter(source, translation);
 }
 
 function createTranslationElement(source: HTMLElement): HTMLDivElement {
@@ -87,7 +94,7 @@ function createTranslationElement(source: HTMLElement): HTMLDivElement {
   source.dataset.fanyiProcessed = "true";
   // 先放进原文内部以继承排版；被裁剪或处于 flex/grid 时外置并复制文字样式
   source.append(translation);
-  if (!canHoldTranslation(source, translation)) moveTranslationAfter(source, translation);
+  settleTranslation(source, translation);
   return translation;
 }
 
@@ -150,6 +157,8 @@ async function translatePage(reset: boolean): Promise<PageStateResponse> {
         placeholder.textContent = translations[index];
         delete placeholder.dataset.loading;
       });
+      // 真实译文比占位符长，固定高度的原文可能此时才装不下
+      placeholders.forEach((placeholder, index) => settleTranslation(batch[index], placeholder));
     } catch (error) {
       const description = error instanceof Error ? error.message : "翻译失败";
       placeholders.forEach((placeholder, index) => {

@@ -5,8 +5,8 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
-const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "item", "cell"];
-const EXTERNALIZED = ["height", "lines", "flex", "grid"];
+const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "ownbg", "item", "cell"];
+const EXTERNALIZED = ["height", "lines", "flex", "grid", "grow", "ownbg"];
 
 const FIXTURE = `
 <script>
@@ -33,6 +33,8 @@ const FIXTURE = `
   .clamp-lines { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
   .flex { display: flex; gap: 14px; width: 600px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grow { width: 260px; height: 80px; overflow: visible; font: 16px/24px Arial, sans-serif; }
+  .ownbg { color: #fff; background: #111; height: 24px; line-height: 24px; overflow: hidden; }
 </style>
 <div class="site">
   <div class="dark"><p id="styled">Styled paragraph on a dark card.</p></div>
@@ -41,6 +43,9 @@ const FIXTURE = `
   <h3 id="lines" class="clamp-lines">Headline clamped to a single line by webkit line clamp.</h3>
   <h2 id="flex" class="flex"><span>Flex heading title</span><span>badge</span></h2>
   <p id="grid" class="grid"><span>First column text</span><span>Second column text</span></p>
+  <p id="grow" class="grow">Carefully read the installation and configuration instructions.</p>
+  <p id="next">The paragraph that follows must stay clear of the translation above.</p>
+  <p id="ownbg" class="ownbg">Light text on the source's own dark background.</p>
   <ul><li id="item">List item text</li></ul>
   <table><tr><td id="cell">Table cell text</td></tr></table>
 </div>`;
@@ -49,6 +54,8 @@ interface Report {
   id: string;
   inside: boolean;
   visible: boolean;
+  sameBackground: boolean;
+  bottom: number;
   fontRatio: number;
   mismatches: string[];
 }
@@ -56,11 +63,12 @@ interface Report {
 let browser: Browser;
 let page: Page;
 
-function measure(ids: string[]): Promise<Record<string, { height: number; text: string }>> {
+function measure(ids: string[]): Promise<Record<string, { top: number; height: number; text: string }>> {
   return page.evaluate((ids) => Object.fromEntries(ids.map((id) => {
     const element = document.getElementById(id);
     if (!element) throw new Error(`missing #${id}`);
-    return [id, { height: element.getBoundingClientRect().height, text: element.innerText.replace(/\s+/g, " ").trim() }];
+    const rect = element.getBoundingClientRect();
+    return [id, { top: rect.top + scrollY, height: rect.height, text: element.innerText.replace(/\s+/g, " ").trim() }];
   })), ids);
 }
 
@@ -87,31 +95,43 @@ describe("immersive translation in a real page", () => {
     const sent = await page.evaluate<string[]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').flatMap((m) => m.texts)");
     expect(sent).toEqual(IDS.map((id) => before[id].text));
 
-    const reports = await page.evaluate(({ ids, properties }): Report[] => ids.map((id) => {
-      const source = document.getElementById(id);
-      const translation = document.querySelector(`#${id} .fanyi-translation, #${id} + .fanyi-translation`);
-      if (!(source instanceof HTMLElement) || !(translation instanceof HTMLElement)) throw new Error(`missing translation for #${id}`);
-      const sourceStyle = getComputedStyle(source);
-      const style = getComputedStyle(translation);
-      const rect = translation.getBoundingClientRect();
-      return {
-        id,
-        inside: source.contains(translation),
-        visible: document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === translation,
-        fontRatio: parseFloat(style.fontSize) / parseFloat(sourceStyle.fontSize),
-        mismatches: properties.filter((property) => style.getPropertyValue(property) !== sourceStyle.getPropertyValue(property)),
+    const reports = await page.evaluate(({ ids, properties }): Report[] => {
+      const effectiveBackground = (element: HTMLElement): string => {
+        for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+          const color = getComputedStyle(node).backgroundColor;
+          if (color !== "rgba(0, 0, 0, 0)") return color;
+        }
+        return "canvas";
       };
-    }), { ids: IDS, properties: TEXT_PROPERTIES });
+      return ids.map((id) => {
+        const source = document.getElementById(id);
+        const translation = document.querySelector(`#${id} .fanyi-translation, #${id} + .fanyi-translation`);
+        if (!(source instanceof HTMLElement) || !(translation instanceof HTMLElement)) throw new Error(`missing translation for #${id}`);
+        const sourceStyle = getComputedStyle(source);
+        const style = getComputedStyle(translation);
+        translation.scrollIntoView({ block: "center" });
+        const rect = translation.getBoundingClientRect();
+        return {
+          id,
+          inside: source.contains(translation),
+          visible: document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === translation,
+          sameBackground: effectiveBackground(translation) === effectiveBackground(source),
+          bottom: rect.bottom + scrollY,
+          fontRatio: parseFloat(style.fontSize) / parseFloat(sourceStyle.fontSize),
+          mismatches: properties.filter((property) => style.getPropertyValue(property) !== sourceStyle.getPropertyValue(property)),
+        };
+      });
+    }, { ids: IDS, properties: TEXT_PROPERTIES });
 
     for (const report of reports) {
-      expect(report, report.id).toMatchObject({ visible: true, mismatches: [], inside: !EXTERNALIZED.includes(report.id) });
+      expect(report, report.id).toMatchObject({ visible: true, sameBackground: true, mismatches: [], inside: !EXTERNALIZED.includes(report.id) });
       expect(report.fontRatio, report.id).toBeCloseTo(0.95, 2);
     }
 
-    const after = await measure(["flex", "height", "lines"]);
-    expect(after.flex.height).toBe(before.flex.height);
-    expect(after.height.height).toBe(before.height.height);
-    expect(after.lines.height).toBe(before.lines.height);
+    const after = await measure(["flex", "height", "lines", "grow", "next"]);
+    for (const id of ["flex", "height", "lines", "grow"]) expect(after[id].height, id).toBe(before[id].height);
+    const growTranslation = reports.find((report) => report.id === "grow");
+    expect(growTranslation?.bottom).toBeLessThanOrEqual(after.next.top);
   });
 
   it("restores the page when translation is turned off", async () => {
