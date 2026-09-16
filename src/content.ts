@@ -66,13 +66,12 @@ export function collectTranslatableElements(root: ParentNode = document): HTMLEl
 function createTranslationElement(source: HTMLElement): HTMLDivElement {
   const translation = document.createElement("div");
   translation.className = "fanyi-translation";
-  if (source.matches("li, td, th, dd")) translation.classList.add("fanyi-list-translation");
   translation.dataset.loading = "true";
   translation.dataset.style = settings.translationStyle;
   translation.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
   source.dataset.fanyiProcessed = "true";
-  if (source.matches("li, td, th, dd")) source.append(translation);
-  else source.insertAdjacentElement("afterend", translation);
+  // 放在原文元素内部，直接继承其字体、颜色与对齐
+  source.append(translation);
   return translation;
 }
 
@@ -126,9 +125,10 @@ async function translatePage(reset: boolean): Promise<PageStateResponse> {
   for (let offset = 0; offset < elements.length; offset += BATCH_SIZE) {
     if (!active || currentGeneration !== generation) break;
     const batch = elements.slice(offset, offset + BATCH_SIZE);
+    const texts = batch.map(extractText);
     const placeholders = batch.map(createTranslationElement);
     try {
-      const translations = await requestTranslations(batch.map(extractText));
+      const translations = await requestTranslations(texts);
       if (!active || currentGeneration !== generation) break;
       placeholders.forEach((placeholder, index) => {
         placeholder.textContent = translations[index];

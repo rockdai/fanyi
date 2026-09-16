@@ -71,11 +71,9 @@ nav button.active > span { color: #25634f; }
 .preview-card { min-height: 135px; padding: 14px; border: 1px solid #dfe7e2; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; transition: .2s; }
 .preview-grid input:checked + .preview-card { border-color: #3f8067; box-shadow: inset 0 0 0 1px #3f8067, 0 7px 18px rgba(43,104,81,.08); }
 .preview-card b { font-size: 10px; }
-.sample { display: block; font: 9px/1.6 Georgia, serif; }
-.sample.original { color: #34483f; }
-.sample.soft { color: #568173; }
-.sample.underline { color: #376e5b; text-decoration: underline; text-decoration-color: #add3c2; text-underline-offset: 3px; }
-.sample.card-sample { margin: 0 -2px; padding: 7px; border-left: 2px solid #72aa91; border-radius: 3px; color: #467363; background: #eef6f2; }
+.sample { display: block; color: #34483f; font: 9px/1.6 Georgia, serif; }
+.sample.underline { text-decoration: underline; text-decoration-color: rgba(52,72,63,.3); text-underline-offset: 3px; }
+.sample.card-sample { margin: 0 -2px; padding: 7px; border-left: 2px solid rgba(52,72,63,.4); border-radius: 3px; background: rgba(52,72,63,.06); }
 #font-scale-output { color: #34765f; font-size: 11px; font-weight: 750; }
 .range { width: 100%; accent-color: #357b62; }
 .privacy-hero { padding: 15px 15px 28px; text-align: center; }
