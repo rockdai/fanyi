@@ -5,6 +5,7 @@ const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, t
 const SKIP_SELECTOR = "nav, header, footer, aside, script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
 const MAX_PAGE_BLOCKS = 240;
 const BATCH_SIZE = 8;
+const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
 
 let settings: Settings = DEFAULT_SETTINGS;
 let active = false;
@@ -63,6 +64,20 @@ export function collectTranslatableElements(root: ParentNode = document): HTMLEl
   return elements.filter(isTranslatable).slice(0, MAX_PAGE_BLOCKS);
 }
 
+function canHoldTranslation(source: HTMLElement, translation: HTMLElement): boolean {
+  if (source.matches("td, th")) return true;
+  const style = getComputedStyle(source);
+  if (/flex|grid|box/.test(style.display) || style.overflowX !== "visible" || style.overflowY !== "visible") return false;
+  return translation.getBoundingClientRect().bottom <= source.getBoundingClientRect().bottom + 1;
+}
+
+function moveTranslationAfter(source: HTMLElement, translation: HTMLElement): void {
+  const style = getComputedStyle(source);
+  for (const property of INHERITED_TEXT_PROPERTIES) translation.style.setProperty(property, style.getPropertyValue(property), "important");
+  translation.style.setProperty("font-size", `calc(${style.fontSize} * var(--fanyi-font-scale, .95))`, "important");
+  source.insertAdjacentElement("afterend", translation);
+}
+
 function createTranslationElement(source: HTMLElement): HTMLDivElement {
   const translation = document.createElement("div");
   translation.className = "fanyi-translation";
@@ -70,8 +85,9 @@ function createTranslationElement(source: HTMLElement): HTMLDivElement {
   translation.dataset.style = settings.translationStyle;
   translation.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
   source.dataset.fanyiProcessed = "true";
-  // 放在原文元素内部，直接继承其字体、颜色与对齐
+  // 先放进原文内部以继承排版；被裁剪或处于 flex/grid 时外置并复制文字样式
   source.append(translation);
+  if (!canHoldTranslation(source, translation)) moveTranslationAfter(source, translation);
   return translation;
 }
 
