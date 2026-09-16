@@ -202,15 +202,15 @@ function selectionStyles(): string {
   return `
     :host { all: initial; position: fixed; z-index: 2147483647; font-family: Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; color: #17372d; }
     * { box-sizing: border-box; }
-    .card { position: relative; width: 380px; overflow: hidden; border: 1px solid rgba(32,76,61,.16); border-radius: 15px; background: rgba(255,255,255,.98); box-shadow: 0 18px 55px rgba(17,45,36,.22), 0 2px 8px rgba(17,45,36,.08); backdrop-filter: blur(18px); animation: in .16s ease-out; }
+    .card { position: relative; display: flex; flex-direction: column; width: 380px; max-height: calc(100vh - 20px); overflow: hidden; border: 1px solid rgba(32,76,61,.16); border-radius: 15px; background: rgba(255,255,255,.98); box-shadow: 0 18px 55px rgba(17,45,36,.22), 0 2px 8px rgba(17,45,36,.08); backdrop-filter: blur(18px); animation: in .16s ease-out; }
     .close { position: absolute; right: 8px; top: 8px; width: 26px; height: 26px; border: 0; border-radius: 7px; color: #81928b; background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
     .close:hover { background: #edf3ef; color: #355f51; }
-    .source { max-height: 110px; padding: 14px 40px 12px 16px; overflow: auto; border-bottom: 1px solid #e9efeb; background: linear-gradient(145deg,#f6fbf8,#fff); color: #64776f; font: 400 14px/1.55 Georgia,"Times New Roman",serif; }
-    .result { min-height: 64px; padding: 16px; color: #1f4437; font: 500 16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; white-space: pre-wrap; }
+    .source { flex: none; max-height: 110px; padding: 14px 40px 12px 16px; overflow: auto; border-bottom: 1px solid #e9efeb; background: linear-gradient(145deg,#f6fbf8,#fff); color: #64776f; font: 400 14px/1.55 Georgia,"Times New Roman",serif; }
+    .result { flex: 1 1 auto; min-height: 64px; padding: 16px; overflow: auto; color: #1f4437; font: 500 16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; white-space: pre-wrap; }
     .result.loading { color: #8ca098; }
     .result.loading::after { content: ""; display: inline-block; width: 4px; height: 4px; margin-left: 5px; border-radius: 50%; background: #4c8b73; box-shadow: 8px 0 #85b9a4, 16px 0 #c0d8ce; animation: dots 1s infinite; }
     .error { color: #a2594d; }
-    .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-top: 1px solid #edf1ef; background: #fbfcfb; }
+    .actions { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-top: 1px solid #edf1ef; background: #fbfcfb; }
     .languages { display: flex; align-items: center; gap: 2px; color: #94a19c; font-size: 12px; }
     select { max-width: 96px; padding: 5px 2px; border: 0; border-radius: 6px; color: #55756a; background: transparent; cursor: pointer; font: 600 12px/1.2 sans-serif; }
     select:hover { background: #eaf4ef; }
@@ -359,7 +359,7 @@ document.addEventListener("mouseup", (event) => {
 });
 
 document.addEventListener("keyup", (event) => {
-  if (event.key.startsWith("Arrow") || event.key === "Shift") scheduleSelectionTranslation();
+  if (!isInsideOverlay(event) && (event.key.startsWith("Arrow") || event.key === "Shift")) scheduleSelectionTranslation();
 });
 
 document.addEventListener("pointerdown", (event) => {

@@ -5,14 +5,15 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
-const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "ownbg", "item", "cell"];
+const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "long", "ownbg", "item", "cell"];
 const EXTERNALIZED = ["height", "lines", "flex", "grid", "grow", "ownbg"];
 
 const FIXTURE = `
 <script>
   const listeners = [];
   const storageListeners = [];
-  const settings = {};
+  // 老用户的存储只有沉浸式语言字段，没有划词语言字段
+  const settings = { sourceLanguage: "de", targetLanguage: "en" };
   const shadows = new WeakMap();
   const fixedTranslations = { "Review the setup notes before you continue.": "请仔细阅读安装与配置的完整说明。" };
   window.__sent = [];
@@ -27,7 +28,7 @@ const FIXTURE = `
     storage: {
       onChanged: { addListener: (listener) => storageListeners.push(listener) },
       local: {
-        get: async (defaults) => ({ ...defaults, ...settings }),
+        get: async () => ({ ...settings }),
         set: async (patch) => {
           Object.assign(settings, patch);
           storageListeners.forEach((listener) => listener({}, "local"));
@@ -53,6 +54,7 @@ const FIXTURE = `
   };
   window.__select = (id) => {
     const element = document.getElementById(id);
+    element.scrollIntoView({ block: "center" });
     const range = document.createRange();
     range.selectNodeContents(element);
     const rect = element.getBoundingClientRect();
@@ -68,15 +70,26 @@ const FIXTURE = `
     const host = root.host;
     const result = root.querySelector(".result");
     const rect = result.getBoundingClientRect();
+    const actions = root.querySelector(".actions").getBoundingClientRect();
     return {
       text: result.textContent,
       loading: result.classList.contains("loading"),
       fontSize: parseFloat(getComputedStyle(result).fontSize),
       brand: Boolean(root.querySelector(".brand")),
       visible: document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === host,
+      actionsVisible: document.elementFromPoint(actions.left + actions.width / 2, actions.top + actions.height / 2) === host,
+      cardBottom: root.querySelector(".card").getBoundingClientRect().bottom,
+      resultScrollable: result.scrollHeight > result.clientHeight,
+      marked: host.dataset.mark === "kept",
+      focused: document.activeElement === host,
       from: root.querySelector(".from").value,
       to: root.querySelector(".to").value,
     };
+  };
+  window.__markAndFocusSource = () => {
+    const root = window.__overlay("selection");
+    root.host.dataset.mark = "kept";
+    root.querySelector(".from").focus();
   };
   window.__chooseTarget = (code) => {
     const select = window.__overlay("selection").querySelector(".to");
@@ -114,6 +127,7 @@ const FIXTURE = `
   <p id="next">The paragraph that follows must stay clear of the translation above.</p>
   <p id="settle" class="grow">Review the setup notes before you continue.</p>
   <p id="after">Nothing below may be covered by the translation above.</p>
+  <p id="long">Long-form reading is where translation quality matters most. A paragraph that runs for several sentences gives the reader context, rhythm, and the small connective phrases that make an argument feel whole. When a tool translates such a passage, it must keep every clause in order, preserve the names and numbers exactly, and avoid inventing detail that the author never wrote. It should also stay out of the way: the translation belongs beside the text, in the same typeface and colour, so that the eye can move between the two without effort. Anything less breaks the sense of immersion that makes bilingual reading worthwhile in the first place.</p>
   <p id="ownbg" class="ownbg">Light text on the source's own dark background.</p>
   <ul><li id="item">List item text</li></ul>
   <table><tr><td id="cell">Table cell text</td></tr></table>
@@ -125,6 +139,11 @@ interface SelectionPopup {
   fontSize: number;
   brand: boolean;
   visible: boolean;
+  actionsVisible: boolean;
+  cardBottom: number;
+  resultScrollable: boolean;
+  marked: boolean;
+  focused: boolean;
   from: string;
   to: string;
 }
@@ -250,29 +269,39 @@ describe("immersive translation in a real page", () => {
 });
 
 describe("selection translation in a real page", () => {
+  const requestCount = (sourceLanguage: string, targetLanguage: string) => page.evaluate<number>(`window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS' && m.sourceLanguage === '${sourceLanguage}' && m.targetLanguage === '${targetLanguage}').length`);
   const lastRequest = () => page.evaluate<{ sourceLanguage: string; targetLanguage: string; texts: string[] }>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').at(-1)");
   const settledPopup = async (): Promise<SelectionPopup> => {
     await page.waitForFunction("__popup() && !__popup().loading");
     return page.evaluate<SelectionPopup>("__popup()");
   };
 
-  it("translates a selection while page translation is off", async () => {
+  it("translates a selection while page translation is off, using the legacy language pair", async () => {
     expect(await page.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
     await page.evaluate("__select('plain')");
     const popup = await settledPopup();
-    expect(popup).toMatchObject({ text: "译文 A plain paragraph in the host page.", brand: false, visible: true, from: "auto", to: "zh-CN" });
+    expect(popup).toMatchObject({ text: "译文 A plain paragraph in the host page.", brand: false, visible: true, from: "de", to: "en" });
     expect(popup.fontSize).toBeGreaterThanOrEqual(15);
-    expect(await lastRequest()).toMatchObject({ sourceLanguage: "auto", targetLanguage: "zh-CN" });
+    expect(await lastRequest()).toMatchObject({ sourceLanguage: "de", targetLanguage: "en" });
+  });
+
+  it("keeps the popup and its focus while arrow keys are used inside it", async () => {
+    const before = await requestCount("de", "en");
+    await page.evaluate("__markAndFocusSource()");
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(400);
+    expect(await page.evaluate<SelectionPopup>("__popup()")).toMatchObject({ marked: true, focused: true });
+    expect(await requestCount("de", "en")).toBe(before);
   });
 
   it("re-translates with the language picked in the popup and remembers it", async () => {
-    await page.evaluate("__chooseTarget('en')");
-    expect(await settledPopup()).toMatchObject({ text: "译文 A plain paragraph in the host page.", to: "en" });
-    expect(await lastRequest()).toMatchObject({ sourceLanguage: "auto", targetLanguage: "en" });
-    expect(await page.evaluate("__stored().selectionTargetLanguage")).toBe("en");
+    await page.evaluate("__chooseTarget('ja')");
+    expect(await settledPopup()).toMatchObject({ text: "译文 A plain paragraph in the host page.", to: "ja" });
+    expect(await lastRequest()).toMatchObject({ targetLanguage: "ja" });
+    expect(await page.evaluate("__stored().selectionTargetLanguage")).toBe("ja");
 
     await page.evaluate("__select('next')");
-    expect(await settledPopup()).toMatchObject({ text: "译文 The paragraph that follows must stay clear of the translation above.", to: "en" });
+    expect(await settledPopup()).toMatchObject({ text: "译文 The paragraph that follows must stay clear of the translation above.", to: "ja" });
   });
 
   it("waits for the trigger button in button mode", async () => {
@@ -284,6 +313,15 @@ describe("selection translation in a real page", () => {
     await page.evaluate("__pressTrigger()");
     expect(await settledPopup()).toMatchObject({ text: "译文 Nothing below may be covered by the translation above.", visible: true });
     expect(await page.evaluate("Boolean(__overlay('trigger'))")).toBe(false);
+  });
+
+  it("keeps a long translation scrollable and the controls in view in a short window", async () => {
+    await page.setViewportSize({ width: 1000, height: 480 });
+    await page.evaluate("__updateSettings({ selectionTrigger: 'auto' })");
+    await page.evaluate("__select('long')");
+    const popup = await settledPopup();
+    expect(popup).toMatchObject({ visible: true, actionsVisible: true, resultScrollable: true });
+    expect(popup.cardBottom).toBeLessThanOrEqual(480);
   });
 
   it("stays quiet when selection translation is disabled", async () => {
