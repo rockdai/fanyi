@@ -21,6 +21,7 @@ describe("brand logo", () => {
   it("uses the approved colors, centered glyph, and two-thirds type scale", () => {
     expect(logo).toContain('fill="#153B31"');
     expect(logo).toContain('fill="#B7E8CE"');
+    expect(logo).toContain('font-family="Songti SC, SimSun, serif"');
     expect(logo).toContain('font-size="85.333333"');
     expect(logo).toContain('text-anchor="middle"');
     expect(logo).toContain(">译</text>");
@@ -33,7 +34,7 @@ describe("brand logo", () => {
   });
 
   it("uses the approved mark in injected page controls", () => {
-    expect(css).toMatch(/\.fanyi-progress-toast::before[^}]*color:\s*#b7e8ce[^}]*background:\s*#153b31[^}]*font-size:\s*14\.666667px/is);
-    expect(content).toMatch(/button \{[^}]*color: #b7e8ce; background: #153b31;[^}]*font: 700 21\.333333px\/1/is);
+    expect(css).toMatch(/\.fanyi-progress-toast::before[^}]*color:\s*#b7e8ce[^}]*background:\s*#153b31[^}]*font-family:\s*"Songti SC", SimSun, serif[^}]*font-size:\s*14\.666667px/is);
+    expect(content).toMatch(/button \{[^}]*color: #b7e8ce; background: #153b31;[^}]*font: 700 21\.333333px\/1 "Songti SC",SimSun,serif/is);
   });
 });
