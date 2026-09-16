@@ -1,0 +1,19 @@
+{
+  "name": "fanyi-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Open-source immersive and selection translation browser extension",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/chrome": "latest",
+    "esbuild": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}

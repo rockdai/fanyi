@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fanyi 设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="options-layout">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-mark">译</div><div><strong>Fanyi</strong><span>开源双语阅读</span></div></div>
+        <nav>
+          <button class="active" data-section="general"><span>◎</span>通用设置</button>
+          <button data-section="service"><span>⌁</span>翻译服务</button>
+          <button data-section="appearance"><span>◐</span>阅读样式</button>
+          <button data-section="sites"><span>◇</span>网站管理</button>
+          <button data-section="privacy"><span>⌾</span>隐私说明</button>
+        </nav>
+        <div class="sidebar-footer"><span class="version">v0.1.0</span><a href="https://github.com/rockdai/fanyi" target="_blank" rel="noreferrer">GitHub ↗</a></div>
+      </aside>
+
+      <main class="settings-main">
+        <header class="page-header">
+          <div><span class="eyebrow">PREFERENCES</span><h1 id="section-title">通用设置</h1><p id="section-description">设置默认语言与翻译行为。</p></div>
+          <div class="save-state" id="save-state"><span></span>已自动保存</div>
+        </header>
+
+        <section class="settings-section active" id="general">
+          <div class="settings-card">
+            <div class="card-title"><div><h2>默认语言</h2><p>新打开的网页会沿用这组语言设置。</p></div></div>
+            <div class="field-grid">
+              <label class="field"><span>源语言</span><select id="options-source-language"></select><small>推荐自动识别</small></label>
+              <label class="field"><span>目标语言</span><select id="options-target-language"></select><small>译文使用的语言</small></label>
+            </div>
+          </div>
+          <div class="settings-card compact-card">
+            <div><h2>划词翻译</h2><p>选中网页文本后自动显示翻译卡片。</p></div>
+            <label class="switch"><input id="options-selection-enabled" type="checkbox" /><span></span></label>
+          </div>
+        </section>
+
+        <section class="settings-section" id="service">
+          <div class="settings-card">
+            <div class="card-title"><div><h2>翻译引擎</h2><p>免费服务开箱即用，也可连接自己的 AI 服务。</p></div></div>
+            <div class="provider-grid">
+              <label class="provider-option"><input type="radio" name="provider" value="google" /><span class="provider-card"><b class="provider-logo google">G</b><span><strong>Google 公共服务</strong><small>无需密钥 · 适合快速体验</small></span><i>推荐</i></span></label>
+              <label class="provider-option"><input type="radio" name="provider" value="openai" /><span class="provider-card"><b class="provider-logo openai">AI</b><span><strong>OpenAI 兼容接口</strong><small>上下文更自然 · 使用自己的密钥</small></span></span></label>
+            </div>
+          </div>
+          <div class="settings-card" id="openai-settings">
+            <div class="card-title"><div><h2>接口配置</h2><p>兼容 OpenAI Chat Completions 协议。</p></div><span class="local-badge">仅存本机</span></div>
+            <div class="field-stack">
+              <label class="field"><span>API 地址</span><input id="api-base-url" type="url" placeholder="https://api.openai.com/v1" /></label>
+              <label class="field"><span>API Key</span><div class="password-field"><input id="api-key" type="password" placeholder="sk-..." autocomplete="off" /><button id="toggle-api-key" type="button">显示</button></div></label>
+              <label class="field"><span>模型</span><input id="api-model" type="text" placeholder="gpt-4o-mini" /></label>
+            </div>
+            <div class="card-actions"><button class="secondary-button" id="test-provider">测试连接</button><span id="test-result"></span></div>
+          </div>
+        </section>
+
+        <section class="settings-section" id="appearance">
+          <div class="settings-card">
+            <div class="card-title"><div><h2>译文样式</h2><p>选择译文在原文旁的呈现方式。</p></div></div>
+            <div class="preview-grid">
+              <label><input type="radio" name="translation-style" value="soft" /><span class="preview-card"><b>轻柔</b><span class="sample original">Language shapes how we see the world.</span><span class="sample soft">语言塑造了我们看待世界的方式。</span></span></label>
+              <label><input type="radio" name="translation-style" value="underline" /><span class="preview-card"><b>下划线</b><span class="sample original">Language shapes how we see the world.</span><span class="sample underline">语言塑造了我们看待世界的方式。</span></span></label>
+              <label><input type="radio" name="translation-style" value="card" /><span class="preview-card"><b>卡片</b><span class="sample original">Language shapes how we see the world.</span><span class="sample card-sample">语言塑造了我们看待世界的方式。</span></span></label>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="card-title"><div><h2>译文字号</h2><p>相对于网页原文字号的比例。</p></div><output id="font-scale-output">95%</output></div>
+            <input id="font-scale" class="range" type="range" min="80" max="120" step="5" />
+          </div>
+        </section>
+
+        <section class="settings-section" id="sites">
+          <div class="settings-card">
+            <div class="card-title"><div><h2>排除网站</h2><p>Fanyi 不会在以下网站运行，每行填写一个域名。</p></div></div>
+            <label class="field"><span>域名列表</span><textarea id="excluded-sites" rows="8" placeholder="example.com\nmail.example.org"></textarea><small>支持完整域名和所有子域名。</small></label>
+          </div>
+        </section>
+
+        <section class="settings-section" id="privacy">
+          <div class="privacy-hero"><div class="privacy-icon">⌾</div><h2>数据属于你</h2><p>Fanyi 没有账号系统，也不运营翻译中转服务器。</p></div>
+          <div class="settings-card privacy-list">
+            <div><span>01</span><p><strong>按需发送</strong>只有你主动翻译的正文或选中文本会发送至所选翻译服务。</p></div>
+            <div><span>02</span><p><strong>密钥留在本地</strong>API Key 保存在浏览器本地存储，不参与云同步。</p></div>
+            <div><span>03</span><p><strong>代码完全开放</strong>你可以审查、修改并自行构建所有代码。</p></div>
+          </div>
+          <button class="danger-button" id="reset-settings">恢复默认设置</button>
+        </section>
+      </main>
+    </div>
+    <div class="toast" id="toast"></div>
+    <script src="options.js"></script>
+  </body>
+</html>

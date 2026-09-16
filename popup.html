@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fanyi</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><span>译</span></div>
+          <div>
+            <div class="brand-name">Fanyi</div>
+            <div class="brand-tagline">读懂世界，不打断阅读</div>
+          </div>
+        </div>
+        <button class="icon-button" id="open-settings" title="设置" aria-label="打开设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10.04 3.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.07 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.44 9v.01a1.7 1.7 0 0 0 1.53 1.03H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+        </button>
+      </header>
+
+      <section class="status-card" id="status-card">
+        <div class="status-glow"></div>
+        <div class="status-copy">
+          <div class="eyebrow"><span class="status-dot"></span><span id="page-status">准备就绪</span></div>
+          <h1 id="page-title">翻译当前网页</h1>
+          <p id="page-host">保留原文，逐段生成自然译文</p>
+        </div>
+        <button class="power-button" id="translate-page" aria-label="切换网页翻译" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v10"/><path d="M18.36 5.64a9 9 0 1 1-12.72 0"/></svg>
+        </button>
+      </section>
+
+      <section class="quick-settings">
+        <div class="section-heading">
+          <span>阅读方式</span>
+          <span class="engine-badge" id="engine-badge">Google</span>
+        </div>
+
+        <label class="setting-row selection-row" for="selection-enabled">
+          <span class="setting-icon mint">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 4 11 8-5 1 3 6-2.5 1.2-3-6L5 18V4Z"/></svg>
+          </span>
+          <span class="setting-copy">
+            <strong>划词翻译</strong>
+            <small>选中文本后显示翻译卡片</small>
+          </span>
+          <span class="switch"><input id="selection-enabled" type="checkbox" /><span></span></span>
+        </label>
+
+        <div class="language-row">
+          <label>
+            <span>源语言</span>
+            <select id="source-language" aria-label="源语言"></select>
+          </label>
+          <button id="swap-languages" class="swap-button" title="交换语言" aria-label="交换语言">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7-3 3 3 3"/><path d="M4 10h13a3 3 0 0 1 3 3v1"/><path d="m17 17 3-3-3-3"/></svg>
+          </button>
+          <label>
+            <span>译为</span>
+            <select id="target-language" aria-label="目标语言"></select>
+          </label>
+        </div>
+
+        <div class="style-control">
+          <span class="control-label">译文样式</span>
+          <div class="segmented" role="radiogroup" aria-label="译文样式">
+            <button data-style="soft" role="radio">轻柔</button>
+            <button data-style="underline" role="radio">下划线</button>
+            <button data-style="card" role="radio">卡片</button>
+          </div>
+        </div>
+      </section>
+
+      <footer class="app-footer">
+        <span><kbd>⌥</kbd><kbd>⇧</kbd><kbd>F</kbd> 快速翻译网页</span>
+        <button id="open-options">更多设置 <span>→</span></button>
+      </footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "Fanyi - 沉浸式双语翻译",
+  "short_name": "Fanyi",
+  "version": "0.1.0",
+  "description": "开源、轻量的沉浸式网页翻译与划词翻译工具。",
+  "permissions": ["storage", "activeTab", "contextMenus"],
+  "host_permissions": [
+    "https://translate.googleapis.com/*",
+    "https://api.openai.com/*"
+  ],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Fanyi",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle-page-translation": {
+      "suggested_key": {
+        "default": "Alt+Shift+F",
+        "mac": "Alt+Shift+F"
+      },
+      "description": "开启或关闭沉浸式翻译"
+    },
+    "translate-selection": {
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "Alt+Shift+S"
+      },
+      "description": "翻译当前选中的文本"
+    }
+  }
+}
