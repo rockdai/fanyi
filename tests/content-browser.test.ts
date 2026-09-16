@@ -529,7 +529,10 @@ describe("translation settings in a real page", () => {
 
     await page.evaluate("window.__failText = null; window.__sent.length = 0; document.getElementById('plain').insertAdjacentHTML('afterend', '<p id=\"added\">Added paragraph after the failure.</p>')");
     await page.waitForFunction("__translation('added')");
+    await page.evaluate("document.getElementById('long').scrollIntoView()");
+    await page.waitForTimeout(400);
     await settled();
+    await page.evaluate("window.scrollTo(0, 0)");
     expect(await page.evaluate("document.querySelectorAll('#long .fanyi-translation, #long + .fanyi-translation').length")).toBe(1);
     expect(await page.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').flatMap((m) => m.texts).some((text) => text.includes('翻译失败'))")).toBe(false);
     await page.evaluate("document.getElementById('added').remove()");
