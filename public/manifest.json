@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Fanyi - 沉浸式双语翻译",
-  "short_name": "Fanyi",
+  "name": "fanyi - 沉浸式双语翻译",
+  "short_name": "fanyi",
   "version": "0.1.0",
   "description": "开源、轻量的沉浸式网页翻译与划词翻译工具。",
   "permissions": ["storage", "activeTab", "contextMenus"],
@@ -14,7 +14,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Fanyi",
+    "default_title": "fanyi",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

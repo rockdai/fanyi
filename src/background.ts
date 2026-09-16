@@ -8,7 +8,7 @@ function createContextMenu(): void {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: MENU_ID,
-      title: "使用 Fanyi 翻译“%s”",
+      title: "使用 fanyi 翻译“%s”",
       contexts: ["selection"],
     });
   });

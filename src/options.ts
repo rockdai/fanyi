@@ -5,7 +5,7 @@ const sectionMeta: Record<string, { title: string; description: string }> = {
   general: { title: "通用设置", description: "设置默认语言与翻译行为。" },
   service: { title: "翻译服务", description: "选择免费引擎或连接自己的 AI 服务。" },
   appearance: { title: "阅读样式", description: "让译文自然融入不同网页。" },
-  sites: { title: "网站管理", description: "控制 Fanyi 在哪些网站运行。" },
+  sites: { title: "网站管理", description: "控制 fanyi 在哪些网站运行。" },
   privacy: { title: "隐私说明", description: "了解文本和密钥如何被处理。" },
 };
 

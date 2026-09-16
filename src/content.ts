@@ -238,7 +238,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
   host.style.left = "10px";
   host.style.top = "10px";
   const shadow = host.attachShadow({ mode: "closed" });
-  shadow.innerHTML = `<style>${selectionStyles()}</style><section class="card" role="dialog" aria-label="Fanyi 划词翻译"><div class="top"><div class="head"><div class="brand"><span class="mark">译</span>Fanyi</div><button class="close" title="关闭" aria-label="关闭">×</button></div><div class="source"></div></div><div class="result loading" aria-live="polite">正在理解这段文字</div><div class="actions"><span class="lang"></span><div class="buttons"><button class="action speak-source">朗读原文</button><button class="action copy" disabled>复制译文</button></div></div></section>`;
+  shadow.innerHTML = `<style>${selectionStyles()}</style><section class="card" role="dialog" aria-label="fanyi 划词翻译"><div class="top"><div class="head"><div class="brand"><span class="mark">译</span>fanyi</div><button class="close" title="关闭" aria-label="关闭">×</button></div><div class="source"></div></div><div class="result loading" aria-live="polite">正在理解这段文字</div><div class="actions"><span class="lang"></span><div class="buttons"><button class="action speak-source">朗读原文</button><button class="action copy" disabled>复制译文</button></div></div></section>`;
   document.documentElement.append(host);
   selectionHost = host;
   const source = shadow.querySelector<HTMLElement>(".source");
