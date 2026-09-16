@@ -31,25 +31,44 @@ function remember(key: string, value: string): void {
   translationCache.set(key, value);
 }
 
-async function translateWithGoogle(text: string, sourceLanguage: string, targetLanguage: string): Promise<string> {
-  const query = new URLSearchParams({
-    client: "gtx",
-    sl: sourceLanguage,
-    tl: targetLanguage,
-    dt: "t",
-    q: text,
-  });
-  const response = await fetch(`https://translate.googleapis.com/translate_a/single?${query.toString()}`);
+const GOOGLE_RETRIES = 2;
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function retryDelay(response: Response, attempt: number): number {
+  const header = response.headers.get("retry-after") ?? "";
+  // Retry-After 可以是延迟秒数或 HTTP-date（RFC 9110 §10.2.3），缺失或无效时才用指数退避
+  const seconds = Number(header);
+  if (header && Number.isFinite(seconds)) return Math.max(0, seconds) * 1000;
+  const until = Date.parse(header);
+  if (Number.isFinite(until)) return Math.max(0, until - Date.now());
+  return 1000 * 2 ** attempt;
+}
+
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(url, init);
+    // 429/5xx 多为限流或瞬时故障，按 Retry-After 或指数退避重试，避免整批直接失败
+    if ((response.status !== 429 && response.status < 500) || attempt >= GOOGLE_RETRIES) return response;
+    await sleep(retryDelay(response, attempt));
+  }
+}
+
+async function translateWithGoogle(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+  const query = new URLSearchParams({ client: "gtx", sl: sourceLanguage, tl: targetLanguage });
+  // translate_a/t 接受多个 q，整批段落只发一次请求；正文放在 POST body 里不受 URL 长度限制
+  const body = new URLSearchParams(texts.map((text) => ["q", text]));
+  const response = await fetchWithRetry(`https://translate.googleapis.com/translate_a/t?${query.toString()}`, { method: "POST", body });
   if (!response.ok) throw new Error(`Google 翻译请求失败（${response.status}）`);
 
   const payload: unknown = await response.json();
-  if (!Array.isArray(payload) || !Array.isArray(payload[0])) throw new Error("Google 翻译返回格式异常");
-  const translated = payload[0]
-    .filter((part): part is unknown[] => Array.isArray(part))
-    .map((part) => String(part[0] ?? ""))
-    .join("");
-  if (!translated) throw new Error("未获得译文");
-  return translated;
+  if (!Array.isArray(payload) || payload.length !== texts.length) throw new Error("Google 翻译返回格式异常");
+  // 源语言为 auto 时每项是 [译文, 检测到的语言]，否则直接是译文字符串
+  const translations = payload.map((item: unknown) => (Array.isArray(item) ? item[0] : item));
+  if (!translations.every((item): item is string => typeof item === "string" && item.length > 0)) throw new Error("未获得译文");
+  return translations;
 }
 
 async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
@@ -97,25 +116,14 @@ export async function translateTexts(texts: string[], settings: Settings, source
 
   if (!missing.length) return results;
 
-  if (settings.provider === "openai") {
-    const translations = await translateWithOpenAI(missing.map(({ text }) => text), { ...settings, sourceLanguage, targetLanguage });
-    translations.forEach((translation, offset) => {
-      const item = missing[offset];
-      results[item.index] = translation;
-      remember(item.key, translation);
-    });
-    return results;
-  }
-
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(4, missing.length) }, async () => {
-    while (cursor < missing.length) {
-      const item = missing[cursor++];
-      const translation = await translateWithGoogle(item.text, sourceLanguage, targetLanguage);
-      results[item.index] = translation;
-      remember(item.key, translation);
-    }
+  const pendingTexts = missing.map(({ text }) => text);
+  const translations = settings.provider === "openai"
+    ? await translateWithOpenAI(pendingTexts, { ...settings, sourceLanguage, targetLanguage })
+    : await translateWithGoogle(pendingTexts, sourceLanguage, targetLanguage);
+  translations.forEach((translation, offset) => {
+    const item = missing[offset];
+    results[item.index] = translation;
+    remember(item.key, translation);
   });
-  await Promise.all(workers);
   return results;
 }
