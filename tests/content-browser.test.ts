@@ -5,7 +5,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
-const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "long", "ownbg", "item", "cell", "far", "side"];
+const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "long", "ownbg", "item", "cell", "far", "linkpara", "side", "sidediv"];
 const EXTERNALIZED = ["height", "lines", "flex", "grid", "grow", "ownbg"];
 
 const FIXTURE = `
@@ -17,16 +17,26 @@ const FIXTURE = `
   const shadows = new WeakMap();
   const fixedTranslations = { "Review the setup notes before you continue.": "请仔细阅读安装与配置的完整说明。" };
   window.__sent = [];
+  window.__pending = [];
+  window.__holdRequests = false;
   window.chrome = {
     runtime: {
       onMessage: { addListener: (listener) => listeners.push(listener) },
       sendMessage: async (message) => {
         window.__sent.push(message);
         if (window.__delay) await new Promise((resolve) => setTimeout(resolve, window.__delay));
-        if (message.type === "TRANSLATE_TEXTS") return { ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) };
+        if (message.type !== "TRANSLATE_TEXTS") return;
+        const reply = () => ({ ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) });
+        if (!window.__holdRequests) return reply();
+        return new Promise((resolve, reject) => window.__pending.push({ texts: message.texts, resolve: () => resolve(reply()), reject: () => reject(new Error("held request failed")) }));
       },
     },
-    i18n: { detectLanguage: async () => ({ isReliable: true, languages: [{ language: "en", percentage: 92 }] }) },
+    i18n: {
+      detectLanguage: async () => {
+        if (window.__detectDelay) await new Promise((resolve) => setTimeout(resolve, window.__detectDelay));
+        return { isReliable: true, languages: [{ language: window.__detected ?? "en", percentage: 92 }] };
+      },
+    },
     storage: {
       onChanged: { addListener: (listener) => storageListeners.push(listener) },
       local: {
@@ -46,6 +56,7 @@ const FIXTURE = `
   };
   document.title = "Hello world";
   window.__toggle = () => listeners[0]({ type: "TOGGLE_PAGE" }, {}, () => {});
+  window.__toggleAsync = () => new Promise((resolve) => listeners[0]({ type: "TOGGLE_PAGE" }, {}, resolve));
   window.__restart = () => listeners[0]({ type: "RESTART_TRANSLATION" }, {}, () => {});
   window.__state = () => new Promise((resolve) => listeners[0]({ type: "GET_PAGE_STATE" }, {}, resolve));
   window.__translation = (id) => {
@@ -144,8 +155,10 @@ const FIXTURE = `
   <table><tr><td id="cell">Table cell text</td></tr></table>
   <div style="height: 1500px"></div>
   <p id="far">A paragraph far below the fold.</p>
-  <aside><p id="side">Sidebar paragraph text.</p></aside>
-  <nav><p id="menu">Navigation menu text.</p></nav>
+  <p id="linkpara">Paragraph with <a id="innerlink" href="#">an inline link</a> inside.</p>
+  <aside><p id="side">Sidebar paragraph text.</p><div id="sidediv">Sidebar div text.</div></aside>
+  <nav><p id="menu">Navigation menu text.</p><a id="navlink" href="#">Navigation link text.</a></nav>
+  <footer><span id="footspan">Footer span text.</span></footer>
 </div>`;
 
 interface SelectionPopup {
@@ -175,6 +188,16 @@ interface Report {
 
 let browser: Browser;
 let page: Page;
+let bundleText: string;
+let css: string;
+
+async function openPage(settingsLiteral: string): Promise<Page> {
+  const fresh = await browser.newPage();
+  await fresh.setContent(FIXTURE.replace('const settings = { sourceLanguage: "de", targetLanguage: "en" };', `const settings = ${settingsLiteral};`));
+  await fresh.addStyleTag({ content: css });
+  await fresh.addScriptTag({ content: bundleText });
+  return fresh;
+}
 
 function measure(ids: string[]): Promise<Record<string, { top: number; height: number; text: string }>> {
   return page.evaluate((ids) => Object.fromEntries(ids.map((id) => {
@@ -187,12 +210,10 @@ function measure(ids: string[]): Promise<Record<string, { top: number; height: n
 
 beforeAll(async () => {
   const bundle = await build({ entryPoints: [fileURLToPath(new URL("../src/content.ts", import.meta.url))], bundle: true, write: false, format: "iife", target: "chrome114", logLevel: "silent" });
-  const css = readFileSync(new URL("../public/content.css", import.meta.url), "utf8");
+  bundleText = bundle.outputFiles[0].text;
+  css = readFileSync(new URL("../public/content.css", import.meta.url), "utf8");
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  page = await browser.newPage();
-  await page.setContent(FIXTURE);
-  await page.addStyleTag({ content: css });
-  await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  page = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
 });
 
 afterAll(async () => {
@@ -314,12 +335,16 @@ describe("translation settings in a real page", () => {
     await page.evaluate("__updateSettings({ eagerCharacters: 4999, translateFullPage: false })");
   });
 
-  it("keeps each request within the character cap", async () => {
+  it("splits long paragraphs so every request stays within the character cap", async () => {
+    const originalLong = FIXTURE.match(/<p id="long">([^<]+)<\/p>/)?.[1] ?? "";
     await page.evaluate("window.__sent.length = 0");
     await restart({ maxCharsPerRequest: 100 });
     const requests = await page.evaluate<string[][]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').map((m) => m.texts)");
-    expect(requests.length).toBeGreaterThan(IDS.length / 4);
-    expect(requests.every((texts) => texts.length === 1 || texts.join("").length <= 100)).toBe(true);
+    expect(requests.every((texts) => texts.join("").length <= 100)).toBe(true);
+    expect(requests.flat().length).toBeGreaterThan(IDS.length);
+    expect(await translation("long")).toMatchObject({ text: expect.stringMatching(/^译文 /) });
+    expect((await translation("long"))?.text.replace(/译文 /g, "")).toBe(originalLong);
+    expect(await page.evaluate("document.querySelectorAll('#long .fanyi-translation, #long + .fanyi-translation').length")).toBe(1);
     await page.evaluate("__updateSettings({ maxCharsPerRequest: 2000 })");
   });
 
@@ -353,6 +378,41 @@ describe("translation settings in a real page", () => {
     expect(await translation("item")).toBeNull();
     expect(await translation("plain")).not.toBeNull();
     await page.evaluate("__updateSettings({ translateTitle: true, minParagraphLength: 2 })");
+  });
+
+  it("collects links, divs and spans in opened regions without translating nested text twice", async () => {
+    await restart({});
+    expect(await translation("sidediv")).toMatchObject({ text: "译文 Sidebar div text." });
+    expect(await translation("navlink")).toBeNull();
+    expect(await translation("footspan")).toBeNull();
+
+    await restart({ translateAllAreas: true });
+    expect(await translation("navlink")).toMatchObject({ text: "译文 Navigation link text." });
+    expect(await translation("footspan")).toMatchObject({ text: "译文 Footer span text." });
+    expect(await translation("linkpara")).toMatchObject({ text: "译文 Paragraph with an inline link inside." });
+    expect(await page.evaluate("document.querySelectorAll('#linkpara .fanyi-translation').length")).toBe(1);
+    expect(await page.evaluate("document.querySelectorAll('#innerlink .fanyi-translation').length")).toBe(0);
+
+    await restart({ translateAllAreas: false, translateAside: false });
+    expect(await translation("sidediv")).toBeNull();
+    expect(await translation("side")).toBeNull();
+    await page.evaluate("__updateSettings({ translateAside: true })");
+  });
+
+  it("leaves a title the page changed itself alone", async () => {
+    await restart({});
+    expect(await page.evaluate("document.title")).toBe("译文 Hello world | Hello world");
+    await page.evaluate("document.title = 'Second article from client-side navigation'");
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    expect(await page.evaluate("document.title")).toBe("Second article from client-side navigation");
+
+    await page.evaluate("document.title = 'Hello world'; window.__holdRequests = true; __restart()");
+    await page.waitForFunction("window.__pending.some((p) => p.texts[0] === 'Hello world')");
+    await page.evaluate("document.title = 'Third article'; window.__holdRequests = false; window.__pending.splice(0).forEach((p) => p.resolve())");
+    await settled();
+    expect(await page.evaluate("document.title")).toBe("Third article");
+    await page.evaluate("document.title = 'Hello world'");
   });
 
   it("breaks long translations into sentences when enabled", async () => {
@@ -401,6 +461,57 @@ describe("translation settings in a real page", () => {
     await page.evaluate("__toggle()");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
     await page.evaluate("__updateSettings({ sourceLanguage: 'de', detectSameLanguage: true })");
+  });
+
+  it("replies with the settled state after async language detection and never queues twice", async () => {
+    await page.evaluate("window.__detected = 'de'; window.__detectDelay = 300; window.__sent.length = 0; __updateSettings({ sourceLanguage: 'auto' })");
+    expect(await page.evaluate("__toggleAsync()")).toMatchObject({ active: true });
+    await settled();
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(IDS.length);
+
+    await page.evaluate("window.__sent.length = 0; __restart(); __restart()");
+    await settled();
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(IDS.length);
+    expect(await page.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS' && m.texts.includes('A plain paragraph in the host page.')).length")).toBe(1);
+
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__toggle(); __toggle()");
+    await page.waitForTimeout(600);
+    expect(await page.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
+    await page.evaluate("window.__detectDelay = 0; __updateSettings({ sourceLanguage: 'de' })");
+  });
+
+  it("ignores a failure of a request from a round that was already restarted", async () => {
+    await page.evaluate("window.__holdRequests = true; __updateSettings({ maxParagraphsPerRequest: 2 })");
+    await page.evaluate("__restart()");
+    await page.waitForFunction("window.__pending.some((p) => p.texts.length === 2)");
+    await page.evaluate("__restart()");
+    await page.waitForFunction("window.__pending.filter((p) => p.texts.length === 2).length === 2");
+    await page.evaluate("window.__pending.find((p) => p.texts.length === 2).reject()");
+    await page.waitForTimeout(100);
+    await page.evaluate("window.__holdRequests = false; window.__pending.splice(0).forEach((p) => p.resolve())");
+    await settled();
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(IDS.length);
+    expect(await page.evaluate("document.querySelectorAll('[data-fanyi-processed]').length")).toBe(IDS.length);
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__updateSettings({ maxParagraphsPerRequest: 4 })");
+  });
+});
+
+describe("page load with translate-to-bottom", () => {
+  it("starts translating on its own only when the option is on", async () => {
+    const auto = await openPage('{ sourceLanguage: "de", targetLanguage: "en", translateFullPage: true }');
+    await auto.waitForFunction(() => document.querySelector(".fanyi-translation") && !document.querySelector(".fanyi-translation[data-loading]"));
+    expect(await auto.evaluate("__state()")).toMatchObject({ active: true, translatedCount: IDS.length });
+    expect(await auto.evaluate("Boolean(__translation('far'))")).toBe(true);
+    await auto.close();
+
+    const manual = await openPage('{ sourceLanguage: "de", targetLanguage: "en", translateFullPage: false }');
+    await manual.waitForTimeout(500);
+    expect(await manual.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
+    await manual.close();
   });
 });
 
