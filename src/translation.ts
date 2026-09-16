@@ -38,8 +38,13 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 function retryDelay(response: Response, attempt: number): number {
-  const retryAfter = Number(response.headers.get("retry-after"));
-  return retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** attempt;
+  const header = response.headers.get("retry-after") ?? "";
+  // Retry-After 可以是延迟秒数或 HTTP-date（RFC 9110 §10.2.3），缺失或无效时才用指数退避
+  const seconds = Number(header);
+  if (header && Number.isFinite(seconds)) return Math.max(0, seconds) * 1000;
+  const until = Date.parse(header);
+  if (Number.isFinite(until)) return Math.max(0, until - Date.now());
+  return 1000 * 2 ** attempt;
 }
 
 async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {

@@ -43,6 +43,20 @@ describe("Google batch translation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("waits until an HTTP-date Retry-After has passed before retrying", async () => {
+    vi.setSystemTime(new Date("2026-09-16T14:00:00Z"));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("", { status: 429, headers: { "retry-after": "Wed, 16 Sep 2026 14:01:00 GMT" } }))
+      .mockResolvedValueOnce(json(["一分钟后"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["A minute later"], DEFAULT_SETTINGS, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(59000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual(["一分钟后"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("gives up after two backoff retries on persistent server errors", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 503 }));
     vi.stubGlobal("fetch", fetchMock);
