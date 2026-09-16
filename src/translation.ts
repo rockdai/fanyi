@@ -65,7 +65,7 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
     },
     body: JSON.stringify({
       model: settings.apiModel,
-      temperature: 0.1,
+      temperature: settings.temperature,
       messages: [
         {
           role: "system",

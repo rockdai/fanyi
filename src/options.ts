@@ -1,5 +1,7 @@
 import type { RuntimeMessage, TranslationResponse } from "./messages";
-import { DEFAULT_SETTINGS, getSettings, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type SelectionTrigger, type Settings, type TranslationProvider, type TranslationStyle } from "./settings";
+import { DEFAULT_SETTINGS, getSettings, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type Settings } from "./settings";
+
+type SettingInput = HTMLInputElement | HTMLSelectElement;
 
 const sectionMeta: Record<string, { title: string; description: string }> = {
   general: { title: "通用设置", description: "设置默认语言与翻译行为。" },
@@ -9,9 +11,9 @@ const sectionMeta: Record<string, { title: string; description: string }> = {
   privacy: { title: "隐私说明", description: "了解文本和密钥如何被处理。" },
 };
 
+const settingInputs = Array.from(document.querySelectorAll<SettingInput>("[data-setting]"));
 const sourceSelect = document.querySelector<HTMLSelectElement>("#options-source-language")!;
 const targetSelect = document.querySelector<HTMLSelectElement>("#options-target-language")!;
-const selectionToggle = document.querySelector<HTMLInputElement>("#options-selection-enabled")!;
 const apiBaseUrl = document.querySelector<HTMLInputElement>("#api-base-url")!;
 const apiKey = document.querySelector<HTMLInputElement>("#api-key")!;
 const apiModel = document.querySelector<HTMLInputElement>("#api-model")!;
@@ -34,19 +36,35 @@ function fillLanguages(): void {
   targetSelect.replaceChildren(...TARGET_LANGUAGES.map(({ code, label }) => new Option(label, code)));
 }
 
+function settingKey(input: SettingInput): keyof Settings {
+  const key = input.dataset.setting ?? "";
+  if (!(key in DEFAULT_SETTINGS)) throw new Error(`未知设置项：${key}`);
+  return key as keyof Settings;
+}
+
+function renderInput(input: SettingInput): void {
+  const value = settings[settingKey(input)];
+  if (input instanceof HTMLInputElement && input.type === "checkbox") input.checked = value === true;
+  else if (input instanceof HTMLInputElement && input.type === "radio") input.checked = input.value === value;
+  else input.value = String(value);
+}
+
+function readInput(input: SettingInput): Partial<Settings> {
+  const key = settingKey(input);
+  const fallback = DEFAULT_SETTINGS[key];
+  let value: unknown = input.value.trim();
+  if (typeof fallback === "boolean") value = input instanceof HTMLInputElement && input.checked;
+  if (typeof fallback === "number" && input instanceof HTMLInputElement) {
+    const parsed = Number(input.value);
+    value = Number.isFinite(parsed) ? Math.min(Number(input.max || Infinity), Math.max(Number(input.min || -Infinity), parsed)) : fallback;
+  }
+  return { [key]: value } as Partial<Settings>;
+}
+
 function render(): void {
-  sourceSelect.value = settings.sourceLanguage;
-  targetSelect.value = settings.targetLanguage;
-  selectionToggle.checked = settings.selectionEnabled;
-  apiBaseUrl.value = settings.apiBaseUrl;
-  apiKey.value = settings.apiKey;
-  apiModel.value = settings.apiModel;
-  fontScale.value = String(settings.fontScale);
+  settingInputs.forEach(renderInput);
   fontScaleOutput.value = `${settings.fontScale}%`;
   excludedSites.value = settings.excludedSites.join("\n");
-  document.querySelectorAll<HTMLInputElement>("input[name='provider']").forEach((input) => input.checked = input.value === settings.provider);
-  document.querySelectorAll<HTMLInputElement>("input[name='translation-style']").forEach((input) => input.checked = input.value === settings.translationStyle);
-  document.querySelectorAll<HTMLInputElement>("input[name='selection-trigger']").forEach((input) => input.checked = input.value === settings.selectionTrigger);
   openAISettings.style.display = settings.provider === "openai" ? "block" : "none";
 }
 
@@ -81,28 +99,10 @@ document.querySelectorAll<HTMLButtonElement>("nav button[data-section]").forEach
   });
 });
 
-sourceSelect.addEventListener("change", () => void persist({ sourceLanguage: sourceSelect.value }));
-targetSelect.addEventListener("change", () => void persist({ targetLanguage: targetSelect.value }));
-selectionToggle.addEventListener("change", () => void persist({ selectionEnabled: selectionToggle.checked }));
-apiBaseUrl.addEventListener("change", () => void persist({ apiBaseUrl: apiBaseUrl.value.trim() }));
-apiKey.addEventListener("change", () => void persist({ apiKey: apiKey.value.trim() }));
-apiModel.addEventListener("change", () => void persist({ apiModel: apiModel.value.trim() }));
+settingInputs.forEach((input) => input.addEventListener("change", () => void persist(readInput(input))));
 excludedSites.addEventListener("change", () => void persist({ excludedSites: excludedSites.value.split("\n").map((site) => site.trim()).filter(Boolean) }));
 fontScale.addEventListener("input", () => {
   fontScaleOutput.value = `${fontScale.value}%`;
-});
-fontScale.addEventListener("change", () => void persist({ fontScale: Number(fontScale.value) }));
-
-document.querySelectorAll<HTMLInputElement>("input[name='provider']").forEach((input) => {
-  input.addEventListener("change", () => void persist({ provider: input.value as TranslationProvider }));
-});
-
-document.querySelectorAll<HTMLInputElement>("input[name='translation-style']").forEach((input) => {
-  input.addEventListener("change", () => void persist({ translationStyle: input.value as TranslationStyle }));
-});
-
-document.querySelectorAll<HTMLInputElement>("input[name='selection-trigger']").forEach((input) => {
-  input.addEventListener("change", () => void persist({ selectionTrigger: input.value as SelectionTrigger }));
 });
 
 document.querySelector("#toggle-api-key")?.addEventListener("click", (event) => {

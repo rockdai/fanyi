@@ -1,37 +1,63 @@
 import type { PageStateResponse, RuntimeMessage, TranslationResponse } from "./messages";
-import { DEFAULT_SETTINGS, getSettings, isSiteExcluded, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type LanguageOption, type Settings } from "./settings";
+import { batchSizeFor, breakSentences, leadingCount, splitText } from "./paragraphs";
+import { DEFAULT_SETTINGS, getSettings, isSameLanguage, isSiteExcluded, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type LanguageOption, type Settings } from "./settings";
 
 const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, td, th, dd";
-const SKIP_SELECTOR = "nav, header, footer, aside, script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
-const MAX_PAGE_BLOCKS = 240;
-const BATCH_SIZE = 8;
+const TEXT_SELECTOR = "div, span, a, dt, label, summary, small, strong, em, b, i";
+const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
+const MAX_PAGE_BLOCKS = 1000;
 const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
+
+interface Paragraph {
+  element: HTMLElement;
+  text: string;
+}
+
 
 let settings: Settings = DEFAULT_SETTINGS;
 let active = false;
 let translating = false;
 let supported = true;
 let generation = 0;
+let originalTitle: string | null = null;
+let translatedTitle: string | null = null;
+let startup: Promise<PageStateResponse> | null = null;
 let mutationTimer: number | undefined;
 let selectionTimer: number | undefined;
 let selectionRequest = 0;
 let selectionHost: HTMLDivElement | null = null;
 let selectionButton: HTMLDivElement | null = null;
+const queue: Paragraph[] = [];
+const waiting = new Map<HTMLElement, Paragraph>();
+const sourceOf = new WeakMap<HTMLElement, HTMLElement>();
 
 const mutationObserver = new MutationObserver((mutations) => {
-  if (!active || translating) return;
+  if (!active) return;
   const hasNewContent = mutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !node.closest(".fanyi-translation, [data-fanyi-root]")));
   if (!hasNewContent) return;
   window.clearTimeout(mutationTimer);
   mutationTimer = window.setTimeout(() => void translatePage(false), 700);
 });
 
+const visibilityObserver = new IntersectionObserver((entries) => {
+  const visible = entries.filter((entry) => entry.isIntersecting).flatMap((entry) => {
+    const paragraph = entry.target instanceof HTMLElement ? waiting.get(entry.target) : undefined;
+    if (!paragraph) return [];
+    waiting.delete(paragraph.element);
+    visibilityObserver.unobserve(paragraph.element);
+    return [paragraph];
+  });
+  if (!visible.length) return;
+  queue.push(...visible);
+  void drainQueue(false);
+}, { rootMargin: "50% 0px" });
+
 function pageState(): PageStateResponse {
   return {
     active,
     translating,
     supported,
-    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading='true'])").length,
+    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading])").length,
   };
 }
 
@@ -49,66 +75,116 @@ function isVisible(element: HTMLElement): boolean {
   return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0 && rect.width > 12 && rect.height > 4;
 }
 
-function isTranslatable(element: HTMLElement): boolean {
-  if (element.hasAttribute("data-fanyi-processed") || element.closest(SKIP_SELECTOR)) return false;
-  if (element.querySelector(BLOCK_SELECTOR)) return false;
-  if (!isVisible(element)) return false;
+function skipSelector(): string {
+  const regions: string[] = [];
+  if (!settings.translateAllAreas) regions.push("nav", "header", "footer");
+  if (!settings.translateAllAreas && !settings.translateAside) regions.push("aside");
+  return [...regions, ALWAYS_SKIPPED].join(", ");
+}
+
+function candidateSelector(): string {
+  // 智能模式只认 p/li 等正文块；放开区域后 div/a/span 这类文本容器也算段落
+  if (settings.translateAllAreas) return `${BLOCK_SELECTOR}, ${TEXT_SELECTOR}`;
+  if (settings.translateAside) return `${BLOCK_SELECTOR}, aside :is(${TEXT_SELECTOR})`;
+  return BLOCK_SELECTOR;
+}
+
+function hasOwnText(element: HTMLElement): boolean {
+  return Array.from(element.childNodes).some((node) => node.nodeType === Node.TEXT_NODE && /[\p{L}\p{N}]/u.test(node.textContent ?? ""));
+}
+
+function hasCollectedAncestor(element: HTMLElement, collected: Set<HTMLElement>): boolean {
+  for (let node = element.parentElement; node; node = node.parentElement) if (collected.has(node)) return true;
+  return false;
+}
+
+function translatableText(element: HTMLElement, skip: string): string | undefined {
+  if (element.closest("[data-fanyi-processed]") || element.closest(skip)) return undefined;
+  if (element.querySelector(BLOCK_SELECTOR) || !isVisible(element)) return undefined;
   const text = extractText(element);
-  if (text.length < 2 || text.length > 5000) return false;
-  if (!/[\p{L}\p{N}]/u.test(text)) return false;
-  if (element.children.length > 12) return false;
-  return true;
+  if (text.length < settings.minParagraphLength || text.length > 5000) return undefined;
+  if (!/[\p{L}\p{N}]/u.test(text) || element.children.length > 12) return undefined;
+  return text;
 }
 
-export function collectTranslatableElements(root: ParentNode = document): HTMLElement[] {
-  const elements = Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
-  return elements.filter(isTranslatable).slice(0, MAX_PAGE_BLOCKS);
+function collectParagraphs(): Paragraph[] {
+  const skip = skipSelector();
+  const collected = new Set<HTMLElement>();
+  const paragraphs: Paragraph[] = [];
+  for (const element of document.querySelectorAll<HTMLElement>(candidateSelector())) {
+    if (paragraphs.length >= MAX_PAGE_BLOCKS) break;
+    if (!element.matches(BLOCK_SELECTOR) && !hasOwnText(element)) continue;
+    if (hasCollectedAncestor(element, collected)) continue;
+    const text = translatableText(element, skip);
+    if (!text) continue;
+    collected.add(element);
+    paragraphs.push({ element, text });
+  }
+  return paragraphs;
 }
 
-function canHoldTranslation(source: HTMLElement, translation: HTMLElement): boolean {
+function canHoldTranslation(source: HTMLElement): boolean {
   if (source.matches("td, th")) return true;
   const style = getComputedStyle(source);
   if (/flex|grid|box/.test(style.display) || style.overflowX !== "visible" || style.overflowY !== "visible") return false;
-  return translation.getBoundingClientRect().bottom <= source.getBoundingClientRect().bottom + 1;
+  // 译文在前时被挤出去的是原文，所以看整体内容是否装得下而不是译文的位置
+  return source.scrollHeight <= source.clientHeight + 1;
 }
 
-function moveTranslationAfter(source: HTMLElement, translation: HTMLElement): void {
+function moveTranslationOutside(source: HTMLElement, translation: HTMLElement): void {
   const style = getComputedStyle(source);
   const copied = [...INHERITED_TEXT_PROPERTIES];
   // 原文自带背景时一并带走，否则复制过来的字色可能与父容器背景撞色
   if (style.backgroundColor !== "rgba(0, 0, 0, 0)" || style.backgroundImage !== "none") copied.push("background", "padding");
   for (const property of copied) translation.style.setProperty(property, style.getPropertyValue(property), "important");
   translation.style.setProperty("font-size", `calc(${style.fontSize} * var(--fanyi-font-scale, .95))`, "important");
-  source.insertAdjacentElement("afterend", translation);
+  source.insertAdjacentElement(settings.translationFirst ? "beforebegin" : "afterend", translation);
 }
 
 function settleTranslation(source: HTMLElement, translation: HTMLElement): void {
-  if (translation.parentElement === source && !canHoldTranslation(source, translation)) moveTranslationAfter(source, translation);
+  if (translation.parentElement === source && !canHoldTranslation(source)) moveTranslationOutside(source, translation);
+}
+
+function placeTranslation(source: HTMLElement, translation: HTMLElement): void {
+  translation.dataset.position = settings.translationFirst ? "before" : "after";
+  // 先放进原文内部以继承排版；被裁剪或处于 flex/grid 时外置并复制文字样式
+  if (settings.translationFirst) source.prepend(translation);
+  else source.append(translation);
+  settleTranslation(source, translation);
 }
 
 function createTranslationElement(source: HTMLElement): HTMLDivElement {
   const translation = document.createElement("div");
   translation.className = "fanyi-translation";
-  translation.dataset.loading = "true";
+  translation.dataset.loading = settings.loadingStyle;
   translation.dataset.style = settings.translationStyle;
   translation.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
-  source.dataset.fanyiProcessed = "true";
-  // 先放进原文内部以继承排版；被裁剪或处于 flex/grid 时外置并复制文字样式
-  source.append(translation);
-  settleTranslation(source, translation);
+  sourceOf.set(translation, source);
+  placeTranslation(source, translation);
   return translation;
+}
+
+function fillTranslation(translation: HTMLElement, text: string): void {
+  const content = settings.sentenceBreaks ? breakSentences(text) : text;
+  if (content !== text) translation.dataset.breaks = "true";
+  translation.textContent = content;
+  delete translation.dataset.loading;
 }
 
 function applyTranslationStyle(): void {
   const translations = Array.from(document.querySelectorAll<HTMLElement>(".fanyi-translation"));
+  const position = settings.translationFirst ? "before" : "after";
   translations.forEach((element) => {
     element.dataset.style = settings.translationStyle;
     element.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
+    if (element.dataset.loading) element.dataset.loading = settings.loadingStyle;
   });
-  // 字号或样式变化后，原本装得下的固定高度原文可能装不下了
+  // 字号、样式或位置变化后，原本装得下的固定高度原文可能装不下了
   translations.forEach((element) => {
-    const source = element.parentElement;
-    if (source?.dataset.fanyiProcessed) settleTranslation(source, element);
+    const source = sourceOf.get(element);
+    if (!source) return;
+    if (element.dataset.position === position) settleTranslation(source, element);
+    else placeTranslation(source, element);
   });
 }
 
@@ -123,73 +199,157 @@ function showProgress(text: string): HTMLElement {
   return toast;
 }
 
-async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+function showNotice(text: string): void {
+  const toast = showProgress(text);
+  window.setTimeout(() => toast.remove(), 2500);
+}
+
+async function sendTranslationRequest(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
   const response = await chrome.runtime.sendMessage({ type: "TRANSLATE_TEXTS", texts, sourceLanguage, targetLanguage } satisfies RuntimeMessage) as TranslationResponse;
   if (!response.ok || !response.translations) throw new Error(response.error || "翻译失败");
+  if (response.translations.length !== texts.length) throw new Error("译文数量不一致");
   return response.translations;
 }
 
-async function translatePage(reset: boolean): Promise<PageStateResponse> {
-  if (!supported) return pageState();
-  if (translating) return pageState();
-  if (reset) removePageTranslations();
-
-  const elements = collectTranslatableElements();
-  if (!elements.length) {
-    active = true;
-    notifyState();
-    return pageState();
+async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string, stillWanted: () => boolean): Promise<string[]> {
+  // 正文、标题、划词都经过这里：超长文本拆段、按段落数和字符数分批，再按原顺序回组
+  const pieces = texts.map((text) => splitText(text, settings.maxCharsPerRequest));
+  const flat = pieces.flat();
+  const translated: string[] = [];
+  while (translated.length < flat.length) {
+    // 调用方已停止或重启时不再开始新的分片请求，已发出的请求自然结束
+    if (!stillWanted()) throw new Error("翻译已取消");
+    const window = flat.slice(translated.length, translated.length + settings.maxParagraphsPerRequest);
+    const batch = window.slice(0, batchSizeFor(window.map((text) => text.length), settings.maxCharsPerRequest));
+    translated.push(...(await sendTranslationRequest(batch, sourceLanguage, targetLanguage)));
   }
+  let cursor = 0;
+  return pieces.map(({ length }) => translated.slice(cursor, (cursor += length)).join(" "));
+}
 
-  active = true;
+async function drainQueue(announce: boolean): Promise<void> {
+  if (translating || !active || !queue.length) return;
   translating = true;
-  const currentGeneration = ++generation;
-  const toast = showProgress(`正在翻译 0 / ${elements.length}`);
+  const currentGeneration = generation;
+  let done = 0;
+  const toast = announce ? showProgress(`正在翻译 0 / ${queue.length}`) : null;
   notifyState();
 
-  for (let offset = 0; offset < elements.length; offset += BATCH_SIZE) {
-    if (!active || currentGeneration !== generation) break;
-    const batch = elements.slice(offset, offset + BATCH_SIZE);
-    const texts = batch.map(extractText);
-    const placeholders = batch.map(createTranslationElement);
+  while (queue.length && active && currentGeneration === generation) {
+    const candidates = queue.slice(0, settings.maxParagraphsPerRequest);
+    const batch = queue.splice(0, batchSizeFor(candidates.map(({ text }) => text.length), settings.maxCharsPerRequest));
+    const placeholders = batch.map(({ element }) => createTranslationElement(element));
     try {
-      const translations = await requestTranslations(texts, settings.sourceLanguage, settings.targetLanguage);
+      const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage, () => active && currentGeneration === generation);
       if (!active || currentGeneration !== generation) break;
-      placeholders.forEach((placeholder, index) => {
-        placeholder.textContent = translations[index];
-        delete placeholder.dataset.loading;
-      });
+      placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
       // 真实译文比占位符长，固定高度的原文可能此时才装不下
-      placeholders.forEach((placeholder, index) => settleTranslation(batch[index], placeholder));
+      placeholders.forEach((placeholder, index) => settleTranslation(batch[index].element, placeholder));
     } catch (error) {
+      // 旧轮次的失败不能碰重启后的新队列和新占位符
+      if (!active || currentGeneration !== generation) break;
       const description = error instanceof Error ? error.message : "翻译失败";
       placeholders.forEach((placeholder, index) => {
         placeholder.textContent = index === 0 ? `翻译失败：${description}` : "";
         delete placeholder.dataset.loading;
       });
+      // 失败批次保留占位符和处理标记；未发出的段落退回未处理状态等下次扫描
+      queue.splice(0).forEach(({ element }) => delete element.dataset.fanyiProcessed);
       break;
     }
-    toast.textContent = `正在翻译 ${Math.min(offset + BATCH_SIZE, elements.length)} / ${elements.length}`;
+    done += batch.length;
+    if (toast) toast.textContent = `正在翻译 ${done} / ${done + queue.length}`;
   }
 
-  translating = false;
-  toast.remove();
-  if (active) mutationObserver.observe(document.body, { childList: true, subtree: true });
+  if (currentGeneration === generation) translating = false;
+  toast?.remove();
   notifyState();
+}
+
+async function pageLanguage(sample: string): Promise<string> {
+  if (settings.sourceLanguage !== "auto") return settings.sourceLanguage;
+  if (document.documentElement.lang) return document.documentElement.lang;
+  const detected = await chrome.i18n.detectLanguage(sample);
+  return detected.languages[0]?.language ?? "";
+}
+
+async function translateTitle(): Promise<void> {
+  const title = document.title.trim();
+  if (!title || originalTitle !== null) return;
+  originalTitle = document.title;
+  const currentGeneration = generation;
+  try {
+    const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage, () => active && currentGeneration === generation);
+    // 网页在此期间自己改了标题就不再覆盖
+    if (!active || currentGeneration !== generation || !translated || document.title !== originalTitle) return;
+    translatedTitle = `${translated} | ${originalTitle}`;
+    document.title = translatedTitle;
+  } catch {
+    // 标题翻译失败不打断正文，正文批次会把同一错误显示给用户
+  }
+}
+
+function translatePage(reset: boolean): Promise<PageStateResponse> {
+  // 记录进行中的启动，语言检测期间再次 TOGGLE 才能取消它；旧启动结束时不能清掉新启动的记录
+  const current: Promise<PageStateResponse> = startTranslation(reset).finally(() => {
+    if (startup === current) startup = null;
+  });
+  startup = current;
+  return current;
+}
+
+async function startTranslation(reset: boolean): Promise<PageStateResponse> {
+  if (!supported) return pageState();
+  if (reset) removePageTranslations();
+  const starting = reset || !active;
+  // 每次启动都换一个代次，仍在等语言检测的更早启动会在检测返回后自行放弃
+  if (starting) generation += 1;
+  const currentGeneration = generation;
+  const paragraphs = collectParagraphs();
+  if (starting && settings.detectSameLanguage) {
+    const sample = paragraphs.slice(0, 20).map(({ text }) => text).join(" ");
+    const language = await pageLanguage(sample);
+    if (currentGeneration !== generation) return pageState();
+    if (isSameLanguage(language, settings.targetLanguage)) {
+      showNotice("页面语言与目标语言相同，无需翻译");
+      return pageState();
+    }
+  }
+
+  active = true;
+  paragraphs.forEach(({ element }) => element.dataset.fanyiProcessed = "true");
+  // 首屏字符预算内的段落立即翻译，其余等滚动到可视区域附近再翻译
+  const eager = settings.translateFullPage ? paragraphs.length : starting ? leadingCount(paragraphs.map(({ text }) => text.length), settings.eagerCharacters) : 0;
+  paragraphs.slice(eager).forEach((paragraph) => {
+    waiting.set(paragraph.element, paragraph);
+    visibilityObserver.observe(paragraph.element);
+  });
+  queue.push(...paragraphs.slice(0, eager));
+  if (starting && settings.translateTitle) void translateTitle();
+  mutationObserver.observe(document.body, { childList: true, subtree: true });
+  notifyState();
+  void drainQueue(true);
   return pageState();
 }
 
 function removePageTranslations(): void {
   generation += 1;
   mutationObserver.disconnect();
+  visibilityObserver.disconnect();
+  waiting.clear();
+  queue.length = 0;
   document.querySelectorAll(".fanyi-translation").forEach((element) => element.remove());
   document.querySelectorAll<HTMLElement>("[data-fanyi-processed]").forEach((element) => delete element.dataset.fanyiProcessed);
   document.querySelector(".fanyi-progress-toast")?.remove();
+  // 只撤销扩展自己写入的标题，网页后来更新的标题保持不动
+  if (originalTitle !== null && document.title === translatedTitle) document.title = originalTitle;
+  originalTitle = null;
+  translatedTitle = null;
   translating = false;
 }
 
 async function togglePage(): Promise<PageStateResponse> {
-  if (active) {
+  if (active || startup) {
     active = false;
     removePageTranslations();
     notifyState();
@@ -291,7 +451,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
     result.textContent = "正在理解这段文字";
     copyButton.disabled = true;
     try {
-      const [translation] = await requestTranslations([normalized], from.value, to.value);
+      const [translation] = await requestTranslations([normalized], from.value, to.value, () => requestId === selectionRequest && host.isConnected);
       if (requestId !== selectionRequest || !host.isConnected) return;
       result.className = "result";
       result.textContent = translation;
@@ -376,14 +536,12 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return false;
   }
   if (message.type === "TOGGLE_PAGE") {
-    void togglePage();
-    sendResponse(pageState());
-    return false;
+    void togglePage().then(sendResponse);
+    return true;
   }
   if (message.type === "RESTART_TRANSLATION") {
-    void translatePage(true);
-    sendResponse(pageState());
-    return false;
+    void translatePage(true).then(sendResponse);
+    return true;
   }
   if (message.type === "SETTINGS_UPDATED") {
     void getSettings().then((nextSettings) => {
@@ -421,4 +579,6 @@ chrome.storage.onChanged.addListener((_changes, areaName) => {
 void getSettings().then((initialSettings) => {
   settings = initialSettings;
   supported = !isSiteExcluded(location.hostname, settings.excludedSites);
+  // 开启“立即翻译到页面底部”时进入网页就开始翻译
+  if (supported && settings.translateFullPage) void translatePage(false);
 });

@@ -2,24 +2,29 @@ import type { RuntimeMessage, TranslationResponse } from "./messages";
 import { getSettings } from "./settings";
 import { translateTexts } from "./translation";
 
-const MENU_ID = "fanyi-translate-selection";
+const SELECTION_MENU_ID = "fanyi-translate-selection";
+const PAGE_MENU_ID = "fanyi-toggle-page";
 
-function createContextMenu(): void {
+function syncContextMenu(): void {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: MENU_ID,
-      title: "使用 fanyi 翻译“%s”",
-      contexts: ["selection"],
+    void getSettings().then(({ contextMenuEnabled }) => {
+      if (!contextMenuEnabled) return;
+      chrome.contextMenus.create({ id: SELECTION_MENU_ID, title: "使用 fanyi 翻译“%s”", contexts: ["selection"] });
+      chrome.contextMenus.create({ id: PAGE_MENU_ID, title: "使用 fanyi 翻译网页", contexts: ["page", "image", "link", "editable"] });
     });
   });
 }
 
-chrome.runtime.onInstalled.addListener(createContextMenu);
-chrome.runtime.onStartup.addListener(createContextMenu);
+chrome.runtime.onInstalled.addListener(syncContextMenu);
+chrome.runtime.onStartup.addListener(syncContextMenu);
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && changes.contextMenuEnabled) syncContextMenu();
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== MENU_ID || !info.selectionText || !tab?.id) return;
-  void chrome.tabs.sendMessage(tab.id, { type: "SHOW_SELECTION_TRANSLATION", text: info.selectionText } satisfies RuntimeMessage);
+  if (!tab?.id) return;
+  if (info.menuItemId === PAGE_MENU_ID) void chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PAGE" } satisfies RuntimeMessage).catch(() => undefined);
+  if (info.menuItemId === SELECTION_MENU_ID && info.selectionText) void chrome.tabs.sendMessage(tab.id, { type: "SHOW_SELECTION_TRANSLATION", text: info.selectionText } satisfies RuntimeMessage);
 });
 
 chrome.commands.onCommand.addListener(async (command) => {
