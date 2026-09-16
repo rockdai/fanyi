@@ -30,15 +30,35 @@
           <div class="settings-card">
             <div class="card-title"><div><h2>默认语言</h2><p>新打开的网页会沿用这组语言设置。</p></div></div>
             <div class="field-grid">
-              <label class="field"><span>源语言</span><select id="options-source-language"></select><small>推荐自动识别</small></label>
-              <label class="field"><span>目标语言</span><select id="options-target-language"></select><small>译文使用的语言</small></label>
+              <label class="field"><span>源语言</span><select id="options-source-language" data-setting="sourceLanguage"></select><small>推荐自动识别</small></label>
+              <label class="field"><span>目标语言</span><select id="options-target-language" data-setting="targetLanguage"></select><small>译文使用的语言</small></label>
             </div>
           </div>
           <div class="settings-card">
-            <div class="card-title"><div><h2>划词翻译</h2><p>开启后，无论网页是否开启沉浸式翻译，选中文本都可以翻译。</p></div><label class="switch"><input id="options-selection-enabled" type="checkbox" /><span></span></label></div>
+            <div class="card-title"><div><h2>划词翻译</h2><p>开启后，无论网页是否开启沉浸式翻译，选中文本都可以翻译。</p></div><label class="switch"><input data-setting="selectionEnabled" type="checkbox" /><span></span></label></div>
             <div class="option-grid">
-              <label class="option"><input type="radio" name="selection-trigger" value="auto" /><span class="option-card"><span><strong>选中后直接翻译</strong><small>松开鼠标即显示译文</small></span></span></label>
-              <label class="option"><input type="radio" name="selection-trigger" value="button" /><span class="option-card"><span><strong>选中后显示按钮</strong><small>点击按钮才翻译，不打扰阅读</small></span></span></label>
+              <label class="option"><input type="radio" name="selection-trigger" data-setting="selectionTrigger" value="auto" /><span class="option-card"><span><strong>选中后直接翻译</strong><small>松开鼠标即显示译文</small></span></span></label>
+              <label class="option"><input type="radio" name="selection-trigger" data-setting="selectionTrigger" value="button" /><span class="option-card"><span><strong>选中后显示按钮</strong><small>点击按钮才翻译，不打扰阅读</small></span></span></label>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="card-title"><div><h2>翻译行为</h2><p>控制沉浸式翻译何时开始、翻译哪些段落。</p></div></div>
+            <div class="field-grid">
+              <label class="field"><span>翻译段落所需的最少字符数</span><input data-setting="minParagraphLength" type="number" min="1" max="200" /><small>hello 是 5 个字符，调大可减少不必要的小段落翻译，默认 2</small></label>
+              <label class="field"><span>直接翻译页面前多少个字符</span><input data-setting="eagerCharacters" type="number" min="0" max="100000" step="100" /><small>这部分内容无需等待滚动到可视区域，默认 4999</small></label>
+            </div>
+            <div class="switch-list">
+              <label class="switch-row"><span><strong>进入网页后立即翻译到页面底部</strong><small>开启后一次性翻译从顶部到底部的内容，关闭则边看边译（不推荐开启）</small></span><span class="switch"><input data-setting="translateFullPage" type="checkbox" /><span></span></span></label>
+              <label class="switch-row"><span><strong>检测页面语言与目标语言是否相同</strong><small>相同时提示无法进行翻译</small></span><span class="switch"><input data-setting="detectSameLanguage" type="checkbox" /><span></span></span></label>
+              <label class="switch-row"><span><strong>启用右键菜单项</strong><small>在网页、图片、选中文本和输入框等场景的右键菜单中添加 fanyi 菜单项</small></span><span class="switch"><input data-setting="contextMenuEnabled" type="checkbox" /><span></span></span></label>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="card-title"><div><h2>翻译范围</h2><p>默认智能识别，只翻译正文等主要区域。</p></div></div>
+            <div class="switch-list">
+              <label class="switch-row"><span><strong>翻译网页所有区域</strong><small>开启后导航、页眉、页脚等区域也会翻译（不推荐开启）</small></span><span class="switch"><input data-setting="translateAllAreas" type="checkbox" /><span></span></span></label>
+              <label class="switch-row"><span><strong>启用侧边栏翻译</strong><small>翻译网页的侧边栏</small></span><span class="switch"><input data-setting="translateAside" type="checkbox" /><span></span></span></label>
+              <label class="switch-row"><span><strong>翻译网页标题</strong><small>标签页标题显示为“译文 | 原文”</small></span><span class="switch"><input data-setting="translateTitle" type="checkbox" /><span></span></span></label>
             </div>
           </div>
         </section>
@@ -47,16 +67,24 @@
           <div class="settings-card">
             <div class="card-title"><div><h2>翻译引擎</h2><p>免费服务开箱即用，也可连接自己的 AI 服务。</p></div></div>
             <div class="option-grid">
-              <label class="option"><input type="radio" name="provider" value="google" /><span class="option-card"><b class="provider-logo google">G</b><span><strong>Google 公共服务</strong><small>无需密钥 · 适合快速体验</small></span><i>推荐</i></span></label>
-              <label class="option"><input type="radio" name="provider" value="openai" /><span class="option-card"><b class="provider-logo openai">AI</b><span><strong>OpenAI 兼容接口</strong><small>上下文更自然 · 使用自己的密钥</small></span></span></label>
+              <label class="option"><input type="radio" name="provider" data-setting="provider" value="google" /><span class="option-card"><b class="provider-logo google">G</b><span><strong>Google 公共服务</strong><small>无需密钥 · 适合快速体验</small></span><i>推荐</i></span></label>
+              <label class="option"><input type="radio" name="provider" data-setting="provider" value="openai" /><span class="option-card"><b class="provider-logo openai">AI</b><span><strong>OpenAI 兼容接口</strong><small>上下文更自然 · 使用自己的密钥</small></span></span></label>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="card-title"><div><h2>请求控制</h2><p>每次翻译请求的规模，影响速度与稳定性。</p></div></div>
+            <div class="field-grid">
+              <label class="field"><span>每次请求最大段落数</span><input data-setting="maxParagraphsPerRequest" type="number" min="1" max="50" /><small>默认并建议 4，过大更容易出现缺段、错位或截断</small></label>
+              <label class="field"><span>每次请求最大文本长度</span><input data-setting="maxCharsPerRequest" type="number" min="100" max="20000" step="100" /><small>字符数太大会让接口响应变慢，可调整以优化速度</small></label>
             </div>
           </div>
           <div class="settings-card" id="openai-settings">
             <div class="card-title"><div><h2>接口配置</h2><p>兼容 OpenAI Chat Completions 协议。</p></div><span class="local-badge">仅存本机</span></div>
             <div class="field-stack">
-              <label class="field"><span>API 地址</span><input id="api-base-url" type="url" placeholder="https://api.openai.com/v1" /></label>
-              <label class="field"><span>API Key</span><div class="password-field"><input id="api-key" type="password" placeholder="sk-..." autocomplete="off" /><button id="toggle-api-key" type="button">显示</button></div></label>
-              <label class="field"><span>模型</span><input id="api-model" type="text" placeholder="gpt-4o-mini" /></label>
+              <label class="field"><span>API 地址</span><input id="api-base-url" data-setting="apiBaseUrl" type="url" placeholder="https://api.openai.com/v1" /></label>
+              <label class="field"><span>API Key</span><div class="password-field"><input id="api-key" data-setting="apiKey" type="password" placeholder="sk-..." autocomplete="off" /><button id="toggle-api-key" type="button">显示</button></div></label>
+              <label class="field"><span>模型</span><input id="api-model" data-setting="apiModel" type="text" placeholder="gpt-4o-mini" /></label>
+              <label class="field"><span>Temperature</span><input data-setting="temperature" type="number" min="0" max="2" step="0.1" /><small>采样发散度，值越小生成越固定；取 0 时几乎总是选择概率最大的词元，默认 1</small></label>
             </div>
             <div class="card-actions"><button class="secondary-button" id="test-provider">测试连接</button><span id="test-result"></span></div>
           </div>
@@ -66,14 +94,22 @@
           <div class="settings-card">
             <div class="card-title"><div><h2>译文样式</h2><p>选择译文在原文旁的呈现方式。</p></div></div>
             <div class="preview-grid">
-              <label><input type="radio" name="translation-style" value="soft" /><span class="preview-card"><b>轻柔</b><span class="sample original">Language shapes how we see the world.</span><span class="sample soft">语言塑造了我们看待世界的方式。</span></span></label>
-              <label><input type="radio" name="translation-style" value="underline" /><span class="preview-card"><b>下划线</b><span class="sample original">Language shapes how we see the world.</span><span class="sample underline">语言塑造了我们看待世界的方式。</span></span></label>
-              <label><input type="radio" name="translation-style" value="card" /><span class="preview-card"><b>卡片</b><span class="sample original">Language shapes how we see the world.</span><span class="sample card-sample">语言塑造了我们看待世界的方式。</span></span></label>
+              <label><input type="radio" name="translation-style" data-setting="translationStyle" value="soft" /><span class="preview-card"><b>轻柔</b><span class="sample original">Language shapes how we see the world.</span><span class="sample soft">语言塑造了我们看待世界的方式。</span></span></label>
+              <label><input type="radio" name="translation-style" data-setting="translationStyle" value="underline" /><span class="preview-card"><b>下划线</b><span class="sample original">Language shapes how we see the world.</span><span class="sample underline">语言塑造了我们看待世界的方式。</span></span></label>
+              <label><input type="radio" name="translation-style" data-setting="translationStyle" value="card" /><span class="preview-card"><b>卡片</b><span class="sample original">Language shapes how we see the world.</span><span class="sample card-sample">语言塑造了我们看待世界的方式。</span></span></label>
             </div>
           </div>
           <div class="settings-card">
             <div class="card-title"><div><h2>译文字号</h2><p>相对于网页原文字号的比例。</p></div><output id="font-scale-output">95%</output></div>
-            <input id="font-scale" class="range" type="range" min="80" max="120" step="5" />
+            <input id="font-scale" data-setting="fontScale" class="range" type="range" min="80" max="120" step="5" />
+          </div>
+          <div class="settings-card">
+            <div class="card-title"><div><h2>排版</h2><p>译文在段落中的位置与加载时的表现。</p></div></div>
+            <label class="field"><span>Loading 样式</span><select data-setting="loadingStyle"><option value="spinner">转圈动画</option><option value="none">不显示</option></select><small>等待译文加载时的占位表现</small></label>
+            <div class="switch-list">
+              <label class="switch-row"><span><strong>译文在先，原文随后</strong><small>开启后每个段落的译文显示在原文前面，默认译文在原文之后</small></span><span class="switch"><input data-setting="translationFirst" type="checkbox" /><span></span></span></label>
+              <label class="switch-row"><span><strong>开启长段落自动换行</strong><small>在长段落译文的每句话结束处插入换行，便于阅读</small></span><span class="switch"><input data-setting="sentenceBreaks" type="checkbox" /><span></span></span></label>
+            </div>
           </div>
         </section>
 

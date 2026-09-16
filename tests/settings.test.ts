@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSiteExcluded, mergeSettings, normalizeDomain } from "../src/settings";
+import { isSameLanguage, isSiteExcluded, mergeSettings, normalizeDomain } from "../src/settings";
 
 describe("site exclusion", () => {
   it("normalizes URL-like input", () => {
@@ -17,5 +17,15 @@ describe("selection languages", () => {
     expect(mergeSettings({ sourceLanguage: "de", targetLanguage: "en" })).toMatchObject({ selectionSourceLanguage: "de", selectionTargetLanguage: "en" });
     expect(mergeSettings({ sourceLanguage: "de", targetLanguage: "en", selectionTargetLanguage: "ja" })).toMatchObject({ selectionSourceLanguage: "de", selectionTargetLanguage: "ja" });
     expect(mergeSettings({})).toMatchObject({ selectionSourceLanguage: "auto", selectionTargetLanguage: "zh-CN" });
+  });
+});
+
+describe("language comparison", () => {
+  it("matches on the primary language but keeps simplified and traditional Chinese apart", () => {
+    expect(isSameLanguage("en-US", "en")).toBe(true);
+    expect(isSameLanguage("zh", "zh-CN")).toBe(true);
+    expect(isSameLanguage("zh-Hant", "zh-TW")).toBe(true);
+    expect(isSameLanguage("zh-CN", "zh-TW")).toBe(false);
+    expect(isSameLanguage("", "en")).toBe(false);
   });
 });

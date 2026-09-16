@@ -1,6 +1,7 @@
 export type TranslationProvider = "google" | "openai";
 export type TranslationStyle = "soft" | "underline" | "card";
 export type SelectionTrigger = "auto" | "button";
+export type LoadingStyle = "spinner" | "none";
 
 export interface Settings {
   selectionEnabled: boolean;
@@ -15,6 +16,20 @@ export interface Settings {
   apiBaseUrl: string;
   apiKey: string;
   apiModel: string;
+  temperature: number;
+  maxParagraphsPerRequest: number;
+  maxCharsPerRequest: number;
+  minParagraphLength: number;
+  eagerCharacters: number;
+  translateFullPage: boolean;
+  detectSameLanguage: boolean;
+  contextMenuEnabled: boolean;
+  translateAllAreas: boolean;
+  translateAside: boolean;
+  translateTitle: boolean;
+  translationFirst: boolean;
+  sentenceBreaks: boolean;
+  loadingStyle: LoadingStyle;
   excludedSites: string[];
 }
 
@@ -52,6 +67,20 @@ export const DEFAULT_SETTINGS: Settings = {
   apiBaseUrl: "https://api.openai.com/v1",
   apiKey: "",
   apiModel: "gpt-4o-mini",
+  temperature: 1,
+  maxParagraphsPerRequest: 4,
+  maxCharsPerRequest: 2000,
+  minParagraphLength: 2,
+  eagerCharacters: 4999,
+  translateFullPage: false,
+  detectSameLanguage: true,
+  contextMenuEnabled: true,
+  translateAllAreas: false,
+  translateAside: true,
+  translateTitle: true,
+  translationFirst: false,
+  sentenceBreaks: false,
+  loadingStyle: "spinner",
   excludedSites: [],
 };
 
@@ -83,4 +112,14 @@ export function isSiteExcluded(hostname: string, sites: string[]): boolean {
     const domain = normalizeDomain(site);
     return Boolean(domain) && (current === domain || current.endsWith(`.${domain}`));
   });
+}
+
+function languageKey(code: string): string {
+  const [primary = "", ...rest] = code.trim().toLowerCase().split(/[-_]/);
+  if (primary !== "zh") return primary;
+  return /^(tw|hk|mo|hant)/.test(rest.join("-")) ? "zh-hant" : "zh-hans";
+}
+
+export function isSameLanguage(pageLanguage: string, targetLanguage: string): boolean {
+  return Boolean(pageLanguage.trim()) && languageKey(pageLanguage) === languageKey(targetLanguage);
 }

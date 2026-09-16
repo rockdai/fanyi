@@ -40,7 +40,14 @@ nav button.active > span { color: #25634f; }
 .field input, .field select, .field textarea { width: 100%; padding: 10px 12px; border: 1px solid #dce6e0; border-radius: 9px; outline: none; background: #fafcfb; font-size: 14px; transition: .2s; }
 .field textarea { min-height: 150px; resize: vertical; line-height: 1.7; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: #6ea990; background: white; box-shadow: 0 0 0 3px rgba(110,169,144,.1); }
-.switch { position: relative; width: 40px; height: 23px; flex: 0 0 auto; }
+.switch { position: relative; display: block; width: 40px; height: 23px; flex: 0 0 auto; }
+.switch-list { margin-top: 6px; }
+.field-grid + .switch-list { margin-top: 20px; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 0; border-top: 1px solid #edf1ef; cursor: pointer; }
+.switch-row strong, .switch-row small { display: block; }
+.switch-row strong { font-size: 14px; }
+.switch-row small { margin-top: 3px; color: #91a098; font-size: 12px; line-height: 1.5; }
+.field + .switch-list { margin-top: 20px; }
 .switch input { opacity: 0; }
 .switch span { position: absolute; inset: 0; border-radius: 20px; background: #d9e0dc; cursor: pointer; transition: .2s; }
 .switch span::after { content: ""; position: absolute; width: 17px; height: 17px; left: 3px; top: 3px; border-radius: 50%; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.17); transition: .2s; }

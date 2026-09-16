@@ -5,7 +5,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
-const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "long", "ownbg", "item", "cell"];
+const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "long", "ownbg", "item", "cell", "far", "side"];
 const EXTERNALIZED = ["height", "lines", "flex", "grid", "grow", "ownbg"];
 
 const FIXTURE = `
@@ -22,9 +22,11 @@ const FIXTURE = `
       onMessage: { addListener: (listener) => listeners.push(listener) },
       sendMessage: async (message) => {
         window.__sent.push(message);
+        if (window.__delay) await new Promise((resolve) => setTimeout(resolve, window.__delay));
         if (message.type === "TRANSLATE_TEXTS") return { ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) };
       },
     },
+    i18n: { detectLanguage: async () => ({ isReliable: true, languages: [{ language: "en", percentage: 92 }] }) },
     storage: {
       onChanged: { addListener: (listener) => storageListeners.push(listener) },
       local: {
@@ -42,7 +44,16 @@ const FIXTURE = `
     shadows.set(this, root);
     return root;
   };
+  document.title = "Hello world";
   window.__toggle = () => listeners[0]({ type: "TOGGLE_PAGE" }, {}, () => {});
+  window.__restart = () => listeners[0]({ type: "RESTART_TRANSLATION" }, {}, () => {});
+  window.__state = () => new Promise((resolve) => listeners[0]({ type: "GET_PAGE_STATE" }, {}, resolve));
+  window.__translation = (id) => {
+    const element = document.querySelector("#" + id + " .fanyi-translation, #" + id + " + .fanyi-translation, .fanyi-translation + #" + id);
+    const translation = element?.classList.contains("fanyi-translation") ? element : element?.previousElementSibling;
+    if (!translation || translation.dataset.loading !== undefined) return null;
+    return { text: translation.textContent, whiteSpace: getComputedStyle(translation).whiteSpace };
+  };
   window.__updateSettings = (patch) => new Promise((resolve) => {
     Object.assign(settings, patch);
     listeners[0]({ type: "SETTINGS_UPDATED" }, {}, resolve);
@@ -131,6 +142,10 @@ const FIXTURE = `
   <p id="ownbg" class="ownbg">Light text on the source's own dark background.</p>
   <ul><li id="item">List item text</li></ul>
   <table><tr><td id="cell">Table cell text</td></tr></table>
+  <div style="height: 1500px"></div>
+  <p id="far">A paragraph far below the fold.</p>
+  <aside><p id="side">Sidebar paragraph text.</p></aside>
+  <nav><p id="menu">Navigation menu text.</p></nav>
 </div>`;
 
 interface SelectionPopup {
@@ -190,8 +205,12 @@ describe("immersive translation in a real page", () => {
     await page.evaluate("__toggle()");
     await page.waitForFunction((count) => document.querySelectorAll(".fanyi-translation").length === count && !document.querySelector(".fanyi-translation[data-loading]"), IDS.length);
 
-    const sent = await page.evaluate<string[]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').flatMap((m) => m.texts)");
-    expect(sent).toEqual(IDS.map((id) => before[id].text));
+    const requests = await page.evaluate<string[][]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').map((m) => m.texts)");
+    expect(requests).toContainEqual(["Hello world"]);
+    expect(requests.filter((texts) => texts[0] !== "Hello world").flat()).toEqual(IDS.map((id) => before[id].text));
+    expect(requests.every((texts) => texts.length <= 4)).toBe(true);
+    expect(await page.evaluate("document.title")).toBe("译文 Hello world | Hello world");
+    expect(await page.evaluate("Boolean(__translation('menu'))")).toBe(false);
 
     const reports = await page.evaluate(({ ids, properties }): Report[] => {
       const effectiveBackground = (element: HTMLElement): string => {
@@ -265,6 +284,123 @@ describe("immersive translation in a real page", () => {
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation, [data-fanyi-processed]").length === 0);
     const restored = await measure(IDS);
     expect(restored.flex.text).toBe("Flex heading title badge");
+    expect(await page.evaluate("document.title")).toBe("Hello world");
+  });
+});
+
+describe("translation settings in a real page", () => {
+  const settled = () => page.waitForFunction(() => document.querySelector(".fanyi-translation") && !document.querySelector(".fanyi-translation[data-loading]"));
+  const restart = async (patch: Record<string, unknown>) => {
+    await page.evaluate(`__updateSettings(${JSON.stringify(patch)})`);
+    await page.evaluate("__restart()");
+    await settled();
+  };
+  const translation = (id: string) => page.evaluate<{ text: string; whiteSpace: string } | null>(`__translation('${id}')`);
+
+  it("translates the first characters eagerly and the rest when scrolled into view", async () => {
+    await page.evaluate("window.scrollTo(0, 0); __updateSettings({ eagerCharacters: 60 })");
+    await page.evaluate("__toggle()");
+    await settled();
+    expect(await translation("plain")).toMatchObject({ text: "译文 A plain paragraph in the host page." });
+    expect(await translation("far")).toBeNull();
+
+    await page.evaluate("document.getElementById('far').scrollIntoView()");
+    await page.waitForFunction("__translation('far')");
+    expect(await translation("far")).toMatchObject({ text: "译文 A paragraph far below the fold." });
+
+    await page.evaluate("window.scrollTo(0, 0)");
+    await restart({ translateFullPage: true });
+    expect(await translation("far")).toMatchObject({ text: "译文 A paragraph far below the fold." });
+    await page.evaluate("__updateSettings({ eagerCharacters: 4999, translateFullPage: false })");
+  });
+
+  it("keeps each request within the character cap", async () => {
+    await page.evaluate("window.__sent.length = 0");
+    await restart({ maxCharsPerRequest: 100 });
+    const requests = await page.evaluate<string[][]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').map((m) => m.texts)");
+    expect(requests.length).toBeGreaterThan(IDS.length / 4);
+    expect(requests.every((texts) => texts.length === 1 || texts.join("").length <= 100)).toBe(true);
+    await page.evaluate("__updateSettings({ maxCharsPerRequest: 2000 })");
+  });
+
+  it("places the translation before the source when asked, live and after restart", async () => {
+    await restart({ translationFirst: true });
+    const before = await page.evaluate(() => ({
+      plainFirst: document.getElementById("plain")?.firstElementChild?.matches(".fanyi-translation[data-position='before']"),
+      growBefore: document.getElementById("grow")?.previousElementSibling?.matches(".fanyi-translation[data-position='before']"),
+      margin: getComputedStyle(document.querySelector("#plain > .fanyi-translation") as Element).marginBottom,
+    }));
+    expect(before).toEqual({ plainFirst: true, growBefore: true, margin: expect.not.stringMatching(/^0px$/) });
+
+    await page.evaluate("__updateSettings({ translationFirst: false })");
+    const after = await page.evaluate(() => ({
+      plainLast: document.getElementById("plain")?.lastElementChild?.matches(".fanyi-translation[data-position='after']"),
+      growAfter: document.getElementById("grow")?.nextElementSibling?.matches(".fanyi-translation[data-position='after']"),
+    }));
+    expect(after).toEqual({ plainLast: true, growAfter: true });
+  });
+
+  it("honours title, sidebar, all-areas and minimum length settings", async () => {
+    await restart({ translateTitle: false, translateAside: false });
+    expect(await page.evaluate("document.title")).toBe("Hello world");
+    expect(await translation("side")).toBeNull();
+
+    await restart({ translateAllAreas: true });
+    expect(await translation("side")).not.toBeNull();
+    expect(await translation("menu")).toMatchObject({ text: "译文 Navigation menu text." });
+
+    await restart({ translateAllAreas: false, translateAside: true, minParagraphLength: 20 });
+    expect(await translation("item")).toBeNull();
+    expect(await translation("plain")).not.toBeNull();
+    await page.evaluate("__updateSettings({ translateTitle: true, minParagraphLength: 2 })");
+  });
+
+  it("breaks long translations into sentences when enabled", async () => {
+    await restart({ sentenceBreaks: true });
+    const long = await translation("long");
+    expect(long?.whiteSpace).toBe("pre-line");
+    expect(long?.text.split("\n").length).toBeGreaterThan(3);
+    expect(await translation("plain")).toMatchObject({ whiteSpace: "normal" });
+    await page.evaluate("__updateSettings({ sentenceBreaks: false })");
+  });
+
+  it("shows a spinner or nothing while a translation loads", async () => {
+    const probe = () => page.evaluate(() => {
+      const placeholder = document.querySelector(".fanyi-translation[data-loading]");
+      if (!placeholder) return null;
+      return { display: getComputedStyle(placeholder).display, spinner: getComputedStyle(placeholder, "::before").animationName };
+    });
+    await page.evaluate("window.__delay = 250; __updateSettings({ loadingStyle: 'none' })");
+    await page.evaluate("__restart()");
+    await page.waitForFunction(() => document.querySelector(".fanyi-translation[data-loading]"));
+    expect(await probe()).toEqual({ display: "none", spinner: "none" });
+    await settled();
+
+    await page.evaluate("__updateSettings({ loadingStyle: 'spinner' })");
+    await page.evaluate("__restart()");
+    await page.waitForFunction(() => document.querySelector(".fanyi-translation[data-loading]"));
+    expect(await probe()).toEqual({ display: "block", spinner: "fanyi-spin" });
+    await settled();
+    await page.evaluate("window.__delay = 0");
+  }, 15000);
+
+  it("refuses to translate a page that is already in the target language", async () => {
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__updateSettings({ sourceLanguage: 'auto' })");
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelector(".fanyi-progress-toast"));
+    expect(await page.evaluate("document.querySelector('.fanyi-progress-toast').textContent")).toBe("页面语言与目标语言相同，无需翻译");
+    expect(await page.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
+
+    await page.evaluate("__updateSettings({ detectSameLanguage: false })");
+    await page.evaluate("__toggle()");
+    await settled();
+    expect(await page.evaluate("__state()")).toMatchObject({ active: true });
+
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__updateSettings({ sourceLanguage: 'de', detectSameLanguage: true })");
   });
 });
 
