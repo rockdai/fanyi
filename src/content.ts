@@ -484,7 +484,7 @@ function showSelectionButton(text: string, rect: DOMRect, point: { x: number; y:
   host.style.left = `${Math.min(point.x + 8, window.innerWidth - 42)}px`;
   host.style.top = `${Math.min(point.y + 12, window.innerHeight - 42)}px`;
   const shadow = host.attachShadow({ mode: "closed" });
-  shadow.innerHTML = `<style>:host { all: initial; position: fixed; z-index: 2147483647; } button { width: 32px; height: 32px; border: 1px solid rgba(32,76,61,.16); border-radius: 9px; color: #153b31; background: #b7e8ce; box-shadow: 0 6px 18px rgba(17,45,36,.22); cursor: pointer; font: 700 15px/1 sans-serif; }</style><button title="翻译选中文本" aria-label="翻译选中文本">译</button>`;
+  shadow.innerHTML = `<style>:host { all: initial; position: fixed; z-index: 2147483647; } button { width: 32px; height: 32px; padding: 0; border: 1px solid rgba(32,76,61,.16); border-radius: 27%; display: grid; place-items: center; color: #b7e8ce; background: #153b31; box-shadow: 0 6px 18px rgba(17,45,36,.22); cursor: pointer; font: 900 21.333333px/1 "Songti SC",SimSun,serif; } span { transform: translateY(-1px); }</style><button title="翻译选中文本" aria-label="翻译选中文本"><span>译</span></button>`;
   shadow.querySelector("button")?.addEventListener("click", () => void showSelectionTranslation(text, rect));
   document.documentElement.append(host);
   selectionButton = host;
