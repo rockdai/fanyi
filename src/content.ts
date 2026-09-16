@@ -211,12 +211,14 @@ async function sendTranslationRequest(texts: string[], sourceLanguage: string, t
   return response.translations;
 }
 
-async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string, stillWanted: () => boolean): Promise<string[]> {
   // 正文、标题、划词都经过这里：超长文本拆段、按段落数和字符数分批，再按原顺序回组
   const pieces = texts.map((text) => splitText(text, settings.maxCharsPerRequest));
   const flat = pieces.flat();
   const translated: string[] = [];
   while (translated.length < flat.length) {
+    // 调用方已停止或重启时不再开始新的分片请求，已发出的请求自然结束
+    if (!stillWanted()) throw new Error("翻译已取消");
     const window = flat.slice(translated.length, translated.length + settings.maxParagraphsPerRequest);
     const batch = window.slice(0, batchSizeFor(window.map((text) => text.length), settings.maxCharsPerRequest));
     translated.push(...(await sendTranslationRequest(batch, sourceLanguage, targetLanguage)));
@@ -238,7 +240,7 @@ async function drainQueue(announce: boolean): Promise<void> {
     const batch = queue.splice(0, batchSizeFor(candidates.map(({ text }) => text.length), settings.maxCharsPerRequest));
     const placeholders = batch.map(({ element }) => createTranslationElement(element));
     try {
-      const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage);
+      const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage, () => active && currentGeneration === generation);
       if (!active || currentGeneration !== generation) break;
       placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
       // 真实译文比占位符长，固定高度的原文可能此时才装不下
@@ -277,7 +279,7 @@ async function translateTitle(): Promise<void> {
   originalTitle = document.title;
   const currentGeneration = generation;
   try {
-    const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage);
+    const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage, () => active && currentGeneration === generation);
     // 网页在此期间自己改了标题就不再覆盖
     if (!active || currentGeneration !== generation || !translated || document.title !== originalTitle) return;
     translatedTitle = `${translated} | ${originalTitle}`;
@@ -449,7 +451,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
     result.textContent = "正在理解这段文字";
     copyButton.disabled = true;
     try {
-      const [translation] = await requestTranslations([normalized], from.value, to.value);
+      const [translation] = await requestTranslations([normalized], from.value, to.value, () => requestId === selectionRequest && host.isConnected);
       if (requestId !== selectionRequest || !host.isConnected) return;
       result.className = "result";
       result.textContent = translation;

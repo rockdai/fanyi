@@ -541,6 +541,34 @@ describe("translation settings in a real page", () => {
     await page.evaluate("__updateSettings({ maxCharsPerRequest: 2000 })");
   });
 
+  it("stops sending remaining chunks once translation is stopped or restarted", async () => {
+    const originalLong = FIXTURE.match(/<p id="long">([^<]+)<\/p>/)?.[1] ?? "";
+    const requestCount = () => page.evaluate<number>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length");
+    await page.evaluate("window.__holdRequests = true; window.__sent.length = 0; __updateSettings({ maxCharsPerRequest: 100, minParagraphLength: 300, translateTitle: false })");
+    await page.evaluate("__restart()");
+    await page.waitForFunction("window.__pending.length === 1");
+    expect(await page.evaluate("__toggleAsync()")).toMatchObject({ active: false });
+    await page.evaluate("window.__pending.splice(0).forEach((p) => p.resolve())");
+    await page.waitForTimeout(300);
+    expect(await requestCount()).toBe(1);
+    expect(await page.evaluate("__state()")).toMatchObject({ active: false, translating: false, translatedCount: 0 });
+
+    await page.evaluate("__restart()");
+    await page.waitForFunction("window.__pending.length === 1");
+    await page.evaluate("__restart()");
+    await page.waitForFunction("window.__pending.length === 2");
+    await page.evaluate("window.__pending.shift().resolve()");
+    await page.waitForTimeout(300);
+    expect(await requestCount()).toBe(3);
+    await page.evaluate("window.__holdRequests = false; window.__pending.splice(0).forEach((p) => p.resolve())");
+    await settled();
+    expect((await translation("long"))?.text.replace(/译文 /g, "")).toBe(originalLong);
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(1);
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__updateSettings({ maxCharsPerRequest: 2000, minParagraphLength: 2, translateTitle: true })");
+  });
+
   it("splits a long title through the same request limit", async () => {
     const longTitle = FIXTURE.match(/<p id="long">([^<]+)<\/p>/)?.[1] ?? "";
     await page.evaluate(`document.title = ${JSON.stringify(longTitle)}; window.__sent.length = 0`);
