@@ -13,16 +13,6 @@ interface Paragraph {
   text: string;
 }
 
-interface Segment extends Paragraph {
-  part: number;
-  parts: number;
-}
-
-interface PendingTranslation {
-  placeholder: HTMLDivElement;
-  translations: string[];
-  remaining: number;
-}
 
 let settings: Settings = DEFAULT_SETTINGS;
 let active = false;
@@ -37,9 +27,8 @@ let selectionTimer: number | undefined;
 let selectionRequest = 0;
 let selectionHost: HTMLDivElement | null = null;
 let selectionButton: HTMLDivElement | null = null;
-const queue: Segment[] = [];
+const queue: Paragraph[] = [];
 const waiting = new Map<HTMLElement, Paragraph>();
-const pending = new Map<HTMLElement, PendingTranslation>();
 const sourceOf = new WeakMap<HTMLElement, HTMLElement>();
 
 const mutationObserver = new MutationObserver((mutations) => {
@@ -59,14 +48,9 @@ const visibilityObserver = new IntersectionObserver((entries) => {
     return [paragraph];
   });
   if (!visible.length) return;
-  queue.push(...visible.flatMap(segmentsOf));
+  queue.push(...visible);
   void drainQueue(false);
 }, { rootMargin: "50% 0px" });
-
-function segmentsOf(paragraph: Paragraph): Segment[] {
-  const chunks = splitText(paragraph.text, settings.maxCharsPerRequest);
-  return chunks.map((text, part) => ({ element: paragraph.element, text, part, parts: chunks.length }));
-}
 
 function pageState(): PageStateResponse {
   return {
@@ -220,10 +204,25 @@ function showNotice(text: string): void {
   window.setTimeout(() => toast.remove(), 2500);
 }
 
-async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+async function sendTranslationRequest(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
   const response = await chrome.runtime.sendMessage({ type: "TRANSLATE_TEXTS", texts, sourceLanguage, targetLanguage } satisfies RuntimeMessage) as TranslationResponse;
   if (!response.ok || !response.translations) throw new Error(response.error || "翻译失败");
+  if (response.translations.length !== texts.length) throw new Error("译文数量不一致");
   return response.translations;
+}
+
+async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+  // 正文、标题、划词都经过这里：超长文本拆段、按段落数和字符数分批，再按原顺序回组
+  const pieces = texts.map((text) => splitText(text, settings.maxCharsPerRequest));
+  const flat = pieces.flat();
+  const translated: string[] = [];
+  while (translated.length < flat.length) {
+    const window = flat.slice(translated.length, translated.length + settings.maxParagraphsPerRequest);
+    const batch = window.slice(0, batchSizeFor(window.map((text) => text.length), settings.maxCharsPerRequest));
+    translated.push(...(await sendTranslationRequest(batch, sourceLanguage, targetLanguage)));
+  }
+  let cursor = 0;
+  return pieces.map(({ length }) => translated.slice(cursor, (cursor += length)).join(" "));
 }
 
 async function drainQueue(announce: boolean): Promise<void> {
@@ -237,35 +236,23 @@ async function drainQueue(announce: boolean): Promise<void> {
   while (queue.length && active && currentGeneration === generation) {
     const candidates = queue.slice(0, settings.maxParagraphsPerRequest);
     const batch = queue.splice(0, batchSizeFor(candidates.map(({ text }) => text.length), settings.maxCharsPerRequest));
-    const entries = batch.map(pendingFor);
+    const placeholders = batch.map(({ element }) => createTranslationElement(element));
     try {
       const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage);
       if (!active || currentGeneration !== generation) break;
-      batch.forEach((segment, index) => {
-        const entry = entries[index];
-        entry.translations[segment.part] = translations[index];
-        entry.remaining -= 1;
-        if (entry.remaining) return;
-        pending.delete(segment.element);
-        fillTranslation(entry.placeholder, entry.translations.join(" "));
-        // 真实译文比占位符长，固定高度的原文可能此时才装不下
-        settleTranslation(segment.element, entry.placeholder);
-      });
+      placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
+      // 真实译文比占位符长，固定高度的原文可能此时才装不下
+      placeholders.forEach((placeholder, index) => settleTranslation(batch[index].element, placeholder));
     } catch (error) {
       // 旧轮次的失败不能碰重启后的新队列和新占位符
       if (!active || currentGeneration !== generation) break;
       const description = error instanceof Error ? error.message : "翻译失败";
-      entries.forEach((entry, index) => {
-        entry.placeholder.textContent = index === 0 ? `翻译失败：${description}` : "";
-        delete entry.placeholder.dataset.loading;
-        pending.delete(batch[index].element);
+      placeholders.forEach((placeholder, index) => {
+        placeholder.textContent = index === 0 ? `翻译失败：${description}` : "";
+        delete placeholder.dataset.loading;
       });
-      // 未发出的段落退回未处理状态等下次扫描；已有占位符的保留标记，避免重复插入
-      queue.splice(0).forEach(({ element }) => {
-        if (!pending.has(element)) delete element.dataset.fanyiProcessed;
-      });
-      pending.forEach((entry) => fillTranslation(entry.placeholder, entry.translations.filter(Boolean).join(" ")));
-      pending.clear();
+      // 失败批次保留占位符和处理标记；未发出的段落退回未处理状态等下次扫描
+      queue.splice(0).forEach(({ element }) => delete element.dataset.fanyiProcessed);
       break;
     }
     done += batch.length;
@@ -275,14 +262,6 @@ async function drainQueue(announce: boolean): Promise<void> {
   if (currentGeneration === generation) translating = false;
   toast?.remove();
   notifyState();
-}
-
-function pendingFor(segment: Segment): PendingTranslation {
-  const existing = pending.get(segment.element);
-  if (existing) return existing;
-  const entry = { placeholder: createTranslationElement(segment.element), translations: new Array<string>(segment.parts).fill(""), remaining: segment.parts };
-  pending.set(segment.element, entry);
-  return entry;
 }
 
 async function pageLanguage(sample: string): Promise<string> {
@@ -309,17 +288,20 @@ async function translateTitle(): Promise<void> {
 }
 
 function translatePage(reset: boolean): Promise<PageStateResponse> {
-  // 记录进行中的启动，语言检测期间再次 TOGGLE 才能取消它
-  startup = startTranslation(reset).finally(() => {
-    startup = null;
+  // 记录进行中的启动，语言检测期间再次 TOGGLE 才能取消它；旧启动结束时不能清掉新启动的记录
+  const current: Promise<PageStateResponse> = startTranslation(reset).finally(() => {
+    if (startup === current) startup = null;
   });
-  return startup;
+  startup = current;
+  return current;
 }
 
 async function startTranslation(reset: boolean): Promise<PageStateResponse> {
   if (!supported) return pageState();
   if (reset) removePageTranslations();
   const starting = reset || !active;
+  // 每次启动都换一个代次，仍在等语言检测的更早启动会在检测返回后自行放弃
+  if (starting) generation += 1;
   const currentGeneration = generation;
   const paragraphs = collectParagraphs();
   if (starting && settings.detectSameLanguage) {
@@ -340,7 +322,7 @@ async function startTranslation(reset: boolean): Promise<PageStateResponse> {
     waiting.set(paragraph.element, paragraph);
     visibilityObserver.observe(paragraph.element);
   });
-  queue.push(...paragraphs.slice(0, eager).flatMap(segmentsOf));
+  queue.push(...paragraphs.slice(0, eager));
   if (starting && settings.translateTitle) void translateTitle();
   mutationObserver.observe(document.body, { childList: true, subtree: true });
   notifyState();
@@ -353,7 +335,6 @@ function removePageTranslations(): void {
   mutationObserver.disconnect();
   visibilityObserver.disconnect();
   waiting.clear();
-  pending.clear();
   queue.length = 0;
   document.querySelectorAll(".fanyi-translation").forEach((element) => element.remove());
   document.querySelectorAll<HTMLElement>("[data-fanyi-processed]").forEach((element) => delete element.dataset.fanyiProcessed);

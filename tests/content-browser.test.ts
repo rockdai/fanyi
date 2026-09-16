@@ -19,6 +19,8 @@ const FIXTURE = `
   window.__sent = [];
   window.__pending = [];
   window.__holdRequests = false;
+  window.__detections = [];
+  window.__holdDetect = false;
   window.chrome = {
     runtime: {
       onMessage: { addListener: (listener) => listeners.push(listener) },
@@ -26,6 +28,7 @@ const FIXTURE = `
         window.__sent.push(message);
         if (window.__delay) await new Promise((resolve) => setTimeout(resolve, window.__delay));
         if (message.type !== "TRANSLATE_TEXTS") return;
+        if (window.__failText && message.texts.some((text) => text.startsWith(window.__failText))) throw new Error("request failed on purpose");
         const reply = () => ({ ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) });
         if (!window.__holdRequests) return reply();
         return new Promise((resolve, reject) => window.__pending.push({ texts: message.texts, resolve: () => resolve(reply()), reject: () => reject(new Error("held request failed")) }));
@@ -34,6 +37,7 @@ const FIXTURE = `
     i18n: {
       detectLanguage: async () => {
         if (window.__detectDelay) await new Promise((resolve) => setTimeout(resolve, window.__detectDelay));
+        if (window.__holdDetect) await new Promise((resolve) => window.__detections.push(resolve));
         return { isReliable: true, languages: [{ language: window.__detected ?? "en", percentage: 92 }] };
       },
     },
@@ -498,6 +502,55 @@ describe("translation settings in a real page", () => {
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
     await page.evaluate("__updateSettings({ maxParagraphsPerRequest: 4 })");
   });
+
+  it("still cancels a startup that is detecting after an older startup has returned", async () => {
+    await page.evaluate("window.__holdDetect = true; window.__detected = 'de'; window.__sent.length = 0; __updateSettings({ sourceLanguage: 'auto' })");
+    await page.evaluate("__restart()");
+    await page.waitForFunction("window.__detections.length === 1");
+    await page.evaluate("__restart()");
+    await page.waitForFunction("window.__detections.length === 2");
+    await page.evaluate("window.__detections.shift()()");
+    await page.waitForTimeout(50);
+    await page.evaluate("__toggle()");
+    await page.waitForTimeout(50);
+    await page.evaluate("window.__holdDetect = false; window.__detections.splice(0).forEach((resolve) => resolve())");
+    await page.waitForTimeout(400);
+    expect(await page.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
+    expect(await page.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length")).toBe(0);
+    await page.evaluate("__updateSettings({ sourceLanguage: 'de' })");
+  });
+
+  it("keeps a failed paragraph marked so a rescan never re-sends its error text", async () => {
+    await page.evaluate("window.__failText = 'A paragraph that runs'");
+    await restart({ maxCharsPerRequest: 100 });
+    expect(await translation("long")).toMatchObject({ text: expect.stringMatching(/^翻译失败：/) });
+    expect(await page.evaluate("document.querySelectorAll('#long .fanyi-translation, #long + .fanyi-translation').length")).toBe(1);
+
+    await page.evaluate("window.__failText = null; window.__sent.length = 0; document.getElementById('plain').insertAdjacentHTML('afterend', '<p id=\"added\">Added paragraph after the failure.</p>')");
+    await page.waitForFunction("__translation('added')");
+    await settled();
+    expect(await page.evaluate("document.querySelectorAll('#long .fanyi-translation, #long + .fanyi-translation').length")).toBe(1);
+    expect(await page.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').flatMap((m) => m.texts).some((text) => text.includes('翻译失败'))")).toBe(false);
+    await page.evaluate("document.getElementById('added').remove()");
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__updateSettings({ maxCharsPerRequest: 2000 })");
+  });
+
+  it("splits a long title through the same request limit", async () => {
+    const longTitle = FIXTURE.match(/<p id="long">([^<]+)<\/p>/)?.[1] ?? "";
+    await page.evaluate(`document.title = ${JSON.stringify(longTitle)}; window.__sent.length = 0`);
+    await restart({ maxCharsPerRequest: 100 });
+    await page.waitForFunction(() => document.title.startsWith("译文 "));
+    const requests = await page.evaluate<string[][]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').map((m) => m.texts)");
+    expect(requests.every((texts) => texts.join("").length <= 100)).toBe(true);
+    expect(await page.evaluate("document.title.replace(/译文 /g, '')")).toBe(`${longTitle} | ${longTitle}`);
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    expect(await page.evaluate("document.title")).toBe(longTitle);
+    await page.evaluate("document.title = 'Hello world'; __updateSettings({ maxCharsPerRequest: 2000 })");
+  });
 });
 
 describe("page load with translate-to-bottom", () => {
@@ -569,6 +622,18 @@ describe("selection translation in a real page", () => {
     const popup = await settledPopup();
     expect(popup).toMatchObject({ visible: true, actionsVisible: true, resultScrollable: true });
     expect(popup.cardBottom).toBeLessThanOrEqual(480);
+  });
+
+  it("splits a long selection through the same request limit", async () => {
+    const originalLong = FIXTURE.match(/<p id="long">([^<]+)<\/p>/)?.[1] ?? "";
+    await page.evaluate("window.__sent.length = 0; __updateSettings({ maxCharsPerRequest: 100 })");
+    await page.evaluate("__select('long')");
+    const popup = await settledPopup();
+    expect(popup.text.replace(/译文 /g, "")).toBe(originalLong);
+    const requests = await page.evaluate<string[][]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').map((m) => m.texts)");
+    expect(requests.length).toBeGreaterThan(1);
+    expect(requests.every((texts) => texts.join("").length <= 100)).toBe(true);
+    await page.evaluate("__updateSettings({ maxCharsPerRequest: 2000 })");
   });
 
   it("stays quiet when selection translation is disabled", async () => {
