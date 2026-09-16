@@ -6,7 +6,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: 238px; padding: 28px 20px 20px; display: flex; flex-direction: column; color: #dbeae4; background: #153b31; overflow: hidden; }
 .sidebar::after { content: "译"; position: absolute; left: -32px; bottom: -70px; color: rgba(255,255,255,.025); font: 800 230px/1 serif; transform: rotate(-8deg); pointer-events: none; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 30px; }
-.brand-mark { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 12px; color: #173c32; background: #b7e8ce; font-weight: 800; box-shadow: 0 8px 25px rgba(0,0,0,.14); }
+.brand-mark { width: 39px; height: 39px; display: block; border-radius: 27%; box-shadow: 0 8px 25px rgba(0,0,0,.14); }
 .brand strong, .brand span { display: block; }
 .brand strong { color: white; font-size: 20px; letter-spacing: -.02em; }
 .brand span { margin-top: 3px; color: #91afa3; font-size: 12px; }

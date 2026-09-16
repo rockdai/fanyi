@@ -15,9 +15,7 @@ button { color: inherit; }
 .app-shell { padding: 18px; }
 .app-header { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 16px; }
 .brand { display: flex; align-items: center; gap: 11px; }
-.brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; color: white; background: linear-gradient(145deg, #123b31, #276c57); box-shadow: 0 8px 20px rgba(18,59,49,.18); position: relative; overflow: hidden; }
-.brand-mark::after { content: "A"; position: absolute; right: -1px; bottom: -4px; color: rgba(255,255,255,.18); font: 700 26px/1 Georgia, serif; transform: rotate(-8deg); }
-.brand-mark span { position: relative; z-index: 1; font-size: 21px; font-weight: 750; }
+.brand-mark { width: 38px; height: 38px; display: block; border-radius: 27%; box-shadow: 0 8px 20px rgba(18,59,49,.18); }
 .brand-name { font-size: 20px; line-height: 1.1; font-weight: 780; letter-spacing: -.02em; }
 .brand-tagline { margin-top: 4px; color: #7a8b85; font-size: 14px; letter-spacing: .02em; }
 .icon-button { width: 34px; height: 34px; border: 1px solid #e1e9e4; border-radius: 10px; background: rgba(255,255,255,.75); display: grid; place-items: center; cursor: pointer; transition: .2s ease; }
