@@ -11,7 +11,9 @@ const EXTERNALIZED = ["height", "lines", "flex", "grid", "grow", "ownbg"];
 const FIXTURE = `
 <script>
   const listeners = [];
+  const storageListeners = [];
   const settings = {};
+  const shadows = new WeakMap();
   const fixedTranslations = { "Review the setup notes before you continue.": "请仔细阅读安装与配置的完整说明。" };
   window.__sent = [];
   window.chrome = {
@@ -22,13 +24,72 @@ const FIXTURE = `
         if (message.type === "TRANSLATE_TEXTS") return { ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) };
       },
     },
-    storage: { onChanged: { addListener: () => {} }, local: { get: async (defaults) => ({ ...defaults, ...settings }) } },
+    storage: {
+      onChanged: { addListener: (listener) => storageListeners.push(listener) },
+      local: {
+        get: async (defaults) => ({ ...defaults, ...settings }),
+        set: async (patch) => {
+          Object.assign(settings, patch);
+          storageListeners.forEach((listener) => listener({}, "local"));
+        },
+      },
+    },
+  };
+  const nativeAttachShadow = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (init) {
+    const root = nativeAttachShadow.call(this, init);
+    shadows.set(this, root);
+    return root;
   };
   window.__toggle = () => listeners[0]({ type: "TOGGLE_PAGE" }, {}, () => {});
   window.__updateSettings = (patch) => new Promise((resolve) => {
     Object.assign(settings, patch);
     listeners[0]({ type: "SETTINGS_UPDATED" }, {}, resolve);
   });
+  window.__stored = () => settings;
+  window.__overlay = (kind) => {
+    const host = document.querySelector('[data-fanyi-root="' + kind + '"]');
+    return host ? shadows.get(host) : null;
+  };
+  window.__select = (id) => {
+    const element = document.getElementById(id);
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rect = element.getBoundingClientRect();
+    const init = { bubbles: true, clientX: rect.right, clientY: rect.bottom };
+    element.dispatchEvent(new PointerEvent("pointerdown", init));
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    element.dispatchEvent(new MouseEvent("mouseup", init));
+  };
+  window.__popup = () => {
+    const root = window.__overlay("selection");
+    if (!root) return null;
+    const host = root.host;
+    const result = root.querySelector(".result");
+    const rect = result.getBoundingClientRect();
+    return {
+      text: result.textContent,
+      loading: result.classList.contains("loading"),
+      fontSize: parseFloat(getComputedStyle(result).fontSize),
+      brand: Boolean(root.querySelector(".brand")),
+      visible: document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === host,
+      from: root.querySelector(".from").value,
+      to: root.querySelector(".to").value,
+    };
+  };
+  window.__chooseTarget = (code) => {
+    const select = window.__overlay("selection").querySelector(".to");
+    select.value = code;
+    select.dispatchEvent(new Event("change"));
+  };
+  window.__pressTrigger = () => {
+    const button = window.__overlay("trigger").querySelector("button");
+    const init = { bubbles: true, composed: true };
+    button.dispatchEvent(new PointerEvent("pointerdown", init));
+    button.dispatchEvent(new MouseEvent("mouseup", init));
+    button.click();
+  };
 </script>
 <style>
   body { margin: 0; padding: 24px; color: #333; font-family: Georgia, serif; }
@@ -57,6 +118,16 @@ const FIXTURE = `
   <ul><li id="item">List item text</li></ul>
   <table><tr><td id="cell">Table cell text</td></tr></table>
 </div>`;
+
+interface SelectionPopup {
+  text: string;
+  loading: boolean;
+  fontSize: number;
+  brand: boolean;
+  visible: boolean;
+  from: string;
+  to: string;
+}
 
 interface Report {
   id: string;
@@ -175,5 +246,50 @@ describe("immersive translation in a real page", () => {
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation, [data-fanyi-processed]").length === 0);
     const restored = await measure(IDS);
     expect(restored.flex.text).toBe("Flex heading title badge");
+  });
+});
+
+describe("selection translation in a real page", () => {
+  const lastRequest = () => page.evaluate<{ sourceLanguage: string; targetLanguage: string; texts: string[] }>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').at(-1)");
+  const settledPopup = async (): Promise<SelectionPopup> => {
+    await page.waitForFunction("__popup() && !__popup().loading");
+    return page.evaluate<SelectionPopup>("__popup()");
+  };
+
+  it("translates a selection while page translation is off", async () => {
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
+    await page.evaluate("__select('plain')");
+    const popup = await settledPopup();
+    expect(popup).toMatchObject({ text: "译文 A plain paragraph in the host page.", brand: false, visible: true, from: "auto", to: "zh-CN" });
+    expect(popup.fontSize).toBeGreaterThanOrEqual(15);
+    expect(await lastRequest()).toMatchObject({ sourceLanguage: "auto", targetLanguage: "zh-CN" });
+  });
+
+  it("re-translates with the language picked in the popup and remembers it", async () => {
+    await page.evaluate("__chooseTarget('en')");
+    expect(await settledPopup()).toMatchObject({ text: "译文 A plain paragraph in the host page.", to: "en" });
+    expect(await lastRequest()).toMatchObject({ sourceLanguage: "auto", targetLanguage: "en" });
+    expect(await page.evaluate("__stored().selectionTargetLanguage")).toBe("en");
+
+    await page.evaluate("__select('next')");
+    expect(await settledPopup()).toMatchObject({ text: "译文 The paragraph that follows must stay clear of the translation above.", to: "en" });
+  });
+
+  it("waits for the trigger button in button mode", async () => {
+    await page.evaluate("__updateSettings({ selectionTrigger: 'button' })");
+    await page.evaluate("__select('after')");
+    await page.waitForFunction("__overlay('trigger')");
+    expect(await page.evaluate("Boolean(__overlay('selection'))")).toBe(false);
+
+    await page.evaluate("__pressTrigger()");
+    expect(await settledPopup()).toMatchObject({ text: "译文 Nothing below may be covered by the translation above.", visible: true });
+    expect(await page.evaluate("Boolean(__overlay('trigger'))")).toBe(false);
+  });
+
+  it("stays quiet when selection translation is disabled", async () => {
+    await page.evaluate("__updateSettings({ selectionEnabled: false })");
+    await page.evaluate("__select('plain')");
+    await page.waitForTimeout(400);
+    expect(await page.evaluate("Boolean(__overlay('selection') || __overlay('trigger'))")).toBe(false);
   });
 });

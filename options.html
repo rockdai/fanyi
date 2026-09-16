@@ -34,18 +34,21 @@
               <label class="field"><span>目标语言</span><select id="options-target-language"></select><small>译文使用的语言</small></label>
             </div>
           </div>
-          <div class="settings-card compact-card">
-            <div><h2>划词翻译</h2><p>选中网页文本后自动显示翻译卡片。</p></div>
-            <label class="switch"><input id="options-selection-enabled" type="checkbox" /><span></span></label>
+          <div class="settings-card">
+            <div class="card-title"><div><h2>划词翻译</h2><p>开启后，无论网页是否开启沉浸式翻译，选中文本都可以翻译。</p></div><label class="switch"><input id="options-selection-enabled" type="checkbox" /><span></span></label></div>
+            <div class="option-grid">
+              <label class="option"><input type="radio" name="selection-trigger" value="auto" /><span class="option-card"><span><strong>选中后直接翻译</strong><small>松开鼠标即显示译文</small></span></span></label>
+              <label class="option"><input type="radio" name="selection-trigger" value="button" /><span class="option-card"><span><strong>选中后显示按钮</strong><small>点击按钮才翻译，不打扰阅读</small></span></span></label>
+            </div>
           </div>
         </section>
 
         <section class="settings-section" id="service">
           <div class="settings-card">
             <div class="card-title"><div><h2>翻译引擎</h2><p>免费服务开箱即用，也可连接自己的 AI 服务。</p></div></div>
-            <div class="provider-grid">
-              <label class="provider-option"><input type="radio" name="provider" value="google" /><span class="provider-card"><b class="provider-logo google">G</b><span><strong>Google 公共服务</strong><small>无需密钥 · 适合快速体验</small></span><i>推荐</i></span></label>
-              <label class="provider-option"><input type="radio" name="provider" value="openai" /><span class="provider-card"><b class="provider-logo openai">AI</b><span><strong>OpenAI 兼容接口</strong><small>上下文更自然 · 使用自己的密钥</small></span></span></label>
+            <div class="option-grid">
+              <label class="option"><input type="radio" name="provider" value="google" /><span class="option-card"><b class="provider-logo google">G</b><span><strong>Google 公共服务</strong><small>无需密钥 · 适合快速体验</small></span><i>推荐</i></span></label>
+              <label class="option"><input type="radio" name="provider" value="openai" /><span class="option-card"><b class="provider-logo openai">AI</b><span><strong>OpenAI 兼容接口</strong><small>上下文更自然 · 使用自己的密钥</small></span></span></label>
             </div>
           </div>
           <div class="settings-card" id="openai-settings">

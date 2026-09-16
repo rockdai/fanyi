@@ -1,8 +1,12 @@
 export type TranslationProvider = "google" | "openai";
 export type TranslationStyle = "soft" | "underline" | "card";
+export type SelectionTrigger = "auto" | "button";
 
 export interface Settings {
   selectionEnabled: boolean;
+  selectionTrigger: SelectionTrigger;
+  selectionSourceLanguage: string;
+  selectionTargetLanguage: string;
   sourceLanguage: string;
   targetLanguage: string;
   provider: TranslationProvider;
@@ -37,6 +41,9 @@ export const TARGET_LANGUAGES = SOURCE_LANGUAGES.filter(({ code }) => code !== "
 
 export const DEFAULT_SETTINGS: Settings = {
   selectionEnabled: true,
+  selectionTrigger: "auto",
+  selectionSourceLanguage: "auto",
+  selectionTargetLanguage: "zh-CN",
   sourceLanguage: "auto",
   targetLanguage: "zh-CN",
   provider: "google",
