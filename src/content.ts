@@ -5,6 +5,7 @@ const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, t
 const SKIP_SELECTOR = "nav, header, footer, aside, script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
 const MAX_PAGE_BLOCKS = 240;
 const BATCH_SIZE = 8;
+const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
 
 let settings: Settings = DEFAULT_SETTINGS;
 let active = false;
@@ -63,23 +64,50 @@ export function collectTranslatableElements(root: ParentNode = document): HTMLEl
   return elements.filter(isTranslatable).slice(0, MAX_PAGE_BLOCKS);
 }
 
+function canHoldTranslation(source: HTMLElement, translation: HTMLElement): boolean {
+  if (source.matches("td, th")) return true;
+  const style = getComputedStyle(source);
+  if (/flex|grid|box/.test(style.display) || style.overflowX !== "visible" || style.overflowY !== "visible") return false;
+  return translation.getBoundingClientRect().bottom <= source.getBoundingClientRect().bottom + 1;
+}
+
+function moveTranslationAfter(source: HTMLElement, translation: HTMLElement): void {
+  const style = getComputedStyle(source);
+  const copied = [...INHERITED_TEXT_PROPERTIES];
+  // 原文自带背景时一并带走，否则复制过来的字色可能与父容器背景撞色
+  if (style.backgroundColor !== "rgba(0, 0, 0, 0)" || style.backgroundImage !== "none") copied.push("background", "padding");
+  for (const property of copied) translation.style.setProperty(property, style.getPropertyValue(property), "important");
+  translation.style.setProperty("font-size", `calc(${style.fontSize} * var(--fanyi-font-scale, .95))`, "important");
+  source.insertAdjacentElement("afterend", translation);
+}
+
+function settleTranslation(source: HTMLElement, translation: HTMLElement): void {
+  if (translation.parentElement === source && !canHoldTranslation(source, translation)) moveTranslationAfter(source, translation);
+}
+
 function createTranslationElement(source: HTMLElement): HTMLDivElement {
   const translation = document.createElement("div");
   translation.className = "fanyi-translation";
-  if (source.matches("li, td, th, dd")) translation.classList.add("fanyi-list-translation");
   translation.dataset.loading = "true";
   translation.dataset.style = settings.translationStyle;
   translation.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
   source.dataset.fanyiProcessed = "true";
-  if (source.matches("li, td, th, dd")) source.append(translation);
-  else source.insertAdjacentElement("afterend", translation);
+  // 先放进原文内部以继承排版；被裁剪或处于 flex/grid 时外置并复制文字样式
+  source.append(translation);
+  settleTranslation(source, translation);
   return translation;
 }
 
 function applyTranslationStyle(): void {
-  document.querySelectorAll<HTMLElement>(".fanyi-translation").forEach((element) => {
+  const translations = Array.from(document.querySelectorAll<HTMLElement>(".fanyi-translation"));
+  translations.forEach((element) => {
     element.dataset.style = settings.translationStyle;
     element.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
+  });
+  // 字号或样式变化后，原本装得下的固定高度原文可能装不下了
+  translations.forEach((element) => {
+    const source = element.parentElement;
+    if (source?.dataset.fanyiProcessed) settleTranslation(source, element);
   });
 }
 
@@ -126,14 +154,17 @@ async function translatePage(reset: boolean): Promise<PageStateResponse> {
   for (let offset = 0; offset < elements.length; offset += BATCH_SIZE) {
     if (!active || currentGeneration !== generation) break;
     const batch = elements.slice(offset, offset + BATCH_SIZE);
+    const texts = batch.map(extractText);
     const placeholders = batch.map(createTranslationElement);
     try {
-      const translations = await requestTranslations(batch.map(extractText));
+      const translations = await requestTranslations(texts);
       if (!active || currentGeneration !== generation) break;
       placeholders.forEach((placeholder, index) => {
         placeholder.textContent = translations[index];
         delete placeholder.dataset.loading;
       });
+      // 真实译文比占位符长，固定高度的原文可能此时才装不下
+      placeholders.forEach((placeholder, index) => settleTranslation(batch[index], placeholder));
     } catch (error) {
       const description = error instanceof Error ? error.message : "翻译失败";
       placeholders.forEach((placeholder, index) => {

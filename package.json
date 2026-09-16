@@ -12,7 +12,9 @@
   },
   "devDependencies": {
     "@types/chrome": "latest",
+    "@types/node": "^22.20.3",
     "esbuild": "latest",
+    "playwright-core": "^1.63.0",
     "typescript": "latest",
     "vitest": "latest"
   }

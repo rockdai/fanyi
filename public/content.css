@@ -1,36 +1,32 @@
 .fanyi-translation {
-  --fanyi-accent: #368064;
+  display: block !important;
   box-sizing: border-box !important;
   max-width: 100% !important;
-  margin: .42em 0 .72em !important;
-  color: #3f7462 !important;
+  margin: .35em 0 0 !important;
+  color: inherit !important;
   font-family: inherit !important;
   font-size: calc(1em * var(--fanyi-font-scale, .95)) !important;
-  font-style: normal !important;
-  font-weight: 400 !important;
-  line-height: 1.72 !important;
-  letter-spacing: .01em !important;
-  text-align: left !important;
-  text-transform: none !important;
-  white-space: normal !important;
+  font-weight: inherit !important;
+  font-style: inherit !important;
+  line-height: inherit !important;
+  letter-spacing: inherit !important;
+  text-align: inherit !important;
+  text-transform: inherit !important;
 }
-.fanyi-translation[data-style="soft"] { opacity: .92 !important; }
 .fanyi-translation[data-style="underline"] {
-  color: #326b59 !important;
   text-decoration: underline !important;
-  text-decoration-color: rgba(54,128,100,.28) !important;
+  text-decoration-color: color-mix(in srgb, currentColor 30%, transparent) !important;
   text-decoration-thickness: 1px !important;
   text-underline-offset: .18em !important;
 }
 .fanyi-translation[data-style="card"] {
-  padding: .65em .8em !important;
+  padding: .55em .75em !important;
   border: 0 !important;
-  border-left: 3px solid rgba(54,128,100,.62) !important;
+  border-left: 3px solid color-mix(in srgb, currentColor 40%, transparent) !important;
   border-radius: 4px 9px 9px 4px !important;
-  background: rgba(231,245,238,.78) !important;
+  background: color-mix(in srgb, currentColor 6%, transparent) !important;
 }
-.fanyi-translation[data-loading="true"] { min-height: 1.25em !important; width: min(70%, 32em) !important; border-radius: 5px !important; background: linear-gradient(90deg, rgba(54,128,100,.07), rgba(54,128,100,.16), rgba(54,128,100,.07)) !important; background-size: 200% 100% !important; animation: fanyi-shimmer 1.3s infinite linear !important; }
-.fanyi-list-translation { display: block !important; }
+.fanyi-translation[data-loading="true"] { min-height: 1.25em !important; width: min(70%, 32em) !important; border-radius: 5px !important; background: linear-gradient(90deg, color-mix(in srgb, currentColor 6%, transparent), color-mix(in srgb, currentColor 14%, transparent), color-mix(in srgb, currentColor 6%, transparent)) !important; background-size: 200% 100% !important; animation: fanyi-shimmer 1.3s infinite linear !important; }
 .fanyi-progress-toast { position: fixed !important; z-index: 2147483645 !important; right: 22px !important; bottom: 22px !important; display: flex !important; align-items: center !important; gap: 9px !important; padding: 10px 13px !important; border: 1px solid rgba(255,255,255,.1) !important; border-radius: 10px !important; color: #edf8f3 !important; background: rgba(20,58,48,.94) !important; box-shadow: 0 10px 30px rgba(0,0,0,.18) !important; backdrop-filter: blur(12px) !important; font: 500 12px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif !important; }
 .fanyi-progress-toast::before { content: "译" !important; width: 22px !important; height: 22px !important; border-radius: 7px !important; display: grid !important; place-items: center !important; color: #153b31 !important; background: #b7e8ce !important; font-weight: 800 !important; font-size: 11px !important; }
 @keyframes fanyi-shimmer { to { background-position: -200% 0; } }
