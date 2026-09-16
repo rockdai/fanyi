@@ -1,5 +1,5 @@
 import type { PageStateResponse, RuntimeMessage, TranslationResponse } from "./messages";
-import { DEFAULT_SETTINGS, getSettings, isSiteExcluded, type Settings } from "./settings";
+import { DEFAULT_SETTINGS, getSettings, isSiteExcluded, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type LanguageOption, type Settings } from "./settings";
 
 const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, td, th, dd";
 const SKIP_SELECTOR = "nav, header, footer, aside, script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
@@ -16,6 +16,7 @@ let mutationTimer: number | undefined;
 let selectionTimer: number | undefined;
 let selectionRequest = 0;
 let selectionHost: HTMLDivElement | null = null;
+let selectionButton: HTMLDivElement | null = null;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active || translating) return;
@@ -122,13 +123,8 @@ function showProgress(text: string): HTMLElement {
   return toast;
 }
 
-async function requestTranslations(texts: string[]): Promise<string[]> {
-  const response = await chrome.runtime.sendMessage({
-    type: "TRANSLATE_TEXTS",
-    texts,
-    sourceLanguage: settings.sourceLanguage,
-    targetLanguage: settings.targetLanguage,
-  } satisfies RuntimeMessage) as TranslationResponse;
+async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+  const response = await chrome.runtime.sendMessage({ type: "TRANSLATE_TEXTS", texts, sourceLanguage, targetLanguage } satisfies RuntimeMessage) as TranslationResponse;
   if (!response.ok || !response.translations) throw new Error(response.error || "翻译失败");
   return response.translations;
 }
@@ -157,7 +153,7 @@ async function translatePage(reset: boolean): Promise<PageStateResponse> {
     const texts = batch.map(extractText);
     const placeholders = batch.map(createTranslationElement);
     try {
-      const translations = await requestTranslations(texts);
+      const translations = await requestTranslations(texts, settings.sourceLanguage, settings.targetLanguage);
       if (!active || currentGeneration !== generation) break;
       placeholders.forEach((placeholder, index) => {
         placeholder.textContent = translations[index];
@@ -206,25 +202,24 @@ function selectionStyles(): string {
   return `
     :host { all: initial; position: fixed; z-index: 2147483647; font-family: Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; color: #17372d; }
     * { box-sizing: border-box; }
-    .card { width: 330px; overflow: hidden; border: 1px solid rgba(32,76,61,.16); border-radius: 15px; background: rgba(255,255,255,.98); box-shadow: 0 18px 55px rgba(17,45,36,.22), 0 2px 8px rgba(17,45,36,.08); backdrop-filter: blur(18px); animation: in .16s ease-out; }
-    .top { padding: 14px 15px 12px; border-bottom: 1px solid #e9efeb; background: linear-gradient(145deg,#f6fbf8,#fff); }
-    .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:9px; }
-    .brand { display:flex; align-items:center; gap:7px; color:#53776a; font:700 10px/1 sans-serif; letter-spacing:.08em; text-transform:uppercase; }
-    .mark { width:21px; height:21px; display:grid; place-items:center; border-radius:6px; color:#153b31; background:#b7e8ce; font-size:10px; }
-    .close { width:23px; height:23px; border:0; border-radius:7px; color:#81928b; background:transparent; cursor:pointer; font-size:16px; line-height:1; }
-    .close:hover { background:#edf3ef; color:#355f51; }
-    .source { max-height:58px; overflow:auto; color:#64776f; font:400 11px/1.55 Georgia,"Times New Roman",serif; }
-    .result { min-height:62px; padding:15px; color:#1f4437; font:500 13px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; white-space:pre-wrap; }
-    .result.loading { color:#8ca098; }
-    .result.loading::after { content:""; display:inline-block; width:4px; height:4px; margin-left:5px; border-radius:50%; background:#4c8b73; box-shadow:8px 0 #85b9a4,16px 0 #c0d8ce; animation:dots 1s infinite; }
-    .error { color:#a2594d; }
-    .actions { display:flex; align-items:center; justify-content:space-between; padding:9px 11px; border-top:1px solid #edf1ef; background:#fbfcfb; }
-    .lang { color:#94a19c; font:600 9px/1 sans-serif; }
-    .buttons { display:flex; gap:5px; }
-    .action { height:27px; padding:0 9px; border:0; border-radius:7px; color:#55756a; background:transparent; cursor:pointer; font:600 9px/1 sans-serif; }
-    .action:hover { color:#20543f; background:#eaf4ef; }
-    @keyframes in { from { opacity:0; transform:translateY(-4px) scale(.98); } }
-    @keyframes dots { 50% { opacity:.35; } }
+    .card { position: relative; display: flex; flex-direction: column; width: 380px; max-height: calc(100vh - 20px); overflow: hidden; border: 1px solid rgba(32,76,61,.16); border-radius: 15px; background: rgba(255,255,255,.98); box-shadow: 0 18px 55px rgba(17,45,36,.22), 0 2px 8px rgba(17,45,36,.08); backdrop-filter: blur(18px); animation: in .16s ease-out; }
+    .close { position: absolute; right: 8px; top: 8px; width: 26px; height: 26px; border: 0; border-radius: 7px; color: #81928b; background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
+    .close:hover { background: #edf3ef; color: #355f51; }
+    .source { flex: none; max-height: 110px; padding: 14px 40px 12px 16px; overflow: auto; border-bottom: 1px solid #e9efeb; background: linear-gradient(145deg,#f6fbf8,#fff); color: #64776f; font: 400 14px/1.55 Georgia,"Times New Roman",serif; }
+    .result { flex: 1 1 auto; min-height: 64px; padding: 16px; overflow: auto; color: #1f4437; font: 500 16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; white-space: pre-wrap; }
+    .result.loading { color: #8ca098; }
+    .result.loading::after { content: ""; display: inline-block; width: 4px; height: 4px; margin-left: 5px; border-radius: 50%; background: #4c8b73; box-shadow: 8px 0 #85b9a4, 16px 0 #c0d8ce; animation: dots 1s infinite; }
+    .error { color: #a2594d; }
+    .actions { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-top: 1px solid #edf1ef; background: #fbfcfb; }
+    .languages { display: flex; align-items: center; gap: 2px; color: #94a19c; font-size: 12px; }
+    select { max-width: 96px; padding: 5px 2px; border: 0; border-radius: 6px; color: #55756a; background: transparent; cursor: pointer; font: 600 12px/1.2 sans-serif; }
+    select:hover { background: #eaf4ef; }
+    .buttons { display: flex; gap: 4px; }
+    .action { height: 30px; padding: 0 10px; border: 0; border-radius: 7px; color: #55756a; background: transparent; cursor: pointer; font: 600 12px/1 sans-serif; }
+    .action:hover { color: #20543f; background: #eaf4ef; }
+    .action:disabled { opacity: .5; cursor: default; }
+    @keyframes in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+    @keyframes dots { 50% { opacity: .35; } }
   `;
 }
 
@@ -258,80 +253,121 @@ function copyText(text: string): void {
   });
 }
 
+function languageOptions(languages: LanguageOption[], selected: string): HTMLOptionElement[] {
+  return languages.map(({ code, label }) => new Option(label, code, false, code === selected));
+}
+
 async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<void> {
   const normalized = text.replace(/\s+/g, " ").trim().slice(0, 2000);
   if (normalized.length < 2) return;
-  const requestId = ++selectionRequest;
   selectionHost?.remove();
+  selectionButton?.remove();
 
   const host = document.createElement("div");
   host.dataset.fanyiRoot = "selection";
   host.style.left = "10px";
   host.style.top = "10px";
   const shadow = host.attachShadow({ mode: "closed" });
-  shadow.innerHTML = `<style>${selectionStyles()}</style><section class="card" role="dialog" aria-label="fanyi 划词翻译"><div class="top"><div class="head"><div class="brand"><span class="mark">译</span>fanyi</div><button class="close" title="关闭" aria-label="关闭">×</button></div><div class="source"></div></div><div class="result loading" aria-live="polite">正在理解这段文字</div><div class="actions"><span class="lang"></span><div class="buttons"><button class="action speak-source">朗读原文</button><button class="action copy" disabled>复制译文</button></div></div></section>`;
+  shadow.innerHTML = `<style>${selectionStyles()}</style><section class="card" role="dialog" aria-label="划词翻译"><button class="close" title="关闭" aria-label="关闭">×</button><div class="source"></div><div class="result loading" aria-live="polite">正在理解这段文字</div><div class="actions"><div class="languages"><select class="from" aria-label="源语言"></select>→<select class="to" aria-label="目标语言"></select></div><div class="buttons"><button class="action speak-source">朗读原文</button><button class="action copy" disabled>复制译文</button></div></div></section>`;
   document.documentElement.append(host);
   selectionHost = host;
   const source = shadow.querySelector<HTMLElement>(".source");
   const result = shadow.querySelector<HTMLElement>(".result");
-  const language = shadow.querySelector<HTMLElement>(".lang");
+  const from = shadow.querySelector<HTMLSelectElement>(".from");
+  const to = shadow.querySelector<HTMLSelectElement>(".to");
   const copyButton = shadow.querySelector<HTMLButtonElement>(".copy");
-  if (!source || !result || !language || !copyButton) return;
+  if (!source || !result || !from || !to || !copyButton) return;
   source.textContent = normalized;
-  language.textContent = `${settings.sourceLanguage === "auto" ? "自动识别" : settings.sourceLanguage} → ${settings.targetLanguage}`;
+  from.replaceChildren(...languageOptions(SOURCE_LANGUAGES, settings.selectionSourceLanguage));
+  to.replaceChildren(...languageOptions(TARGET_LANGUAGES, settings.selectionTargetLanguage));
   shadow.querySelector(".close")?.addEventListener("click", () => host.remove());
-  shadow.querySelector(".speak-source")?.addEventListener("click", () => speak(normalized, settings.sourceLanguage));
+  shadow.querySelector(".speak-source")?.addEventListener("click", () => speak(normalized, from.value));
   host.addEventListener("pointerdown", (event) => event.stopPropagation());
   positionSelectionHost(host, rect);
 
-  try {
-    const [translation] = await requestTranslations([normalized]);
-    if (requestId !== selectionRequest || !host.isConnected) return;
-    result.classList.remove("loading");
-    result.textContent = translation;
-    copyButton.disabled = false;
-    copyButton.addEventListener("click", () => {
-      copyText(translation);
-      copyButton.textContent = "已复制";
-    });
-    positionSelectionHost(host, rect);
-  } catch (error) {
-    if (requestId !== selectionRequest || !host.isConnected) return;
-    result.classList.remove("loading");
-    result.classList.add("error");
-    result.textContent = error instanceof Error ? error.message : "翻译失败，请稍后重试";
-  }
+  const translate = async (): Promise<void> => {
+    const requestId = ++selectionRequest;
+    result.className = "result loading";
+    result.textContent = "正在理解这段文字";
+    copyButton.disabled = true;
+    try {
+      const [translation] = await requestTranslations([normalized], from.value, to.value);
+      if (requestId !== selectionRequest || !host.isConnected) return;
+      result.className = "result";
+      result.textContent = translation;
+      copyButton.disabled = false;
+      copyButton.textContent = "复制译文";
+      copyButton.onclick = () => {
+        copyText(translation);
+        copyButton.textContent = "已复制";
+      };
+      positionSelectionHost(host, rect);
+    } catch (error) {
+      if (requestId !== selectionRequest || !host.isConnected) return;
+      result.className = "result error";
+      result.textContent = error instanceof Error ? error.message : "翻译失败，请稍后重试";
+    }
+  };
+  const changeLanguages = (): void => {
+    void saveSettings({ selectionSourceLanguage: from.value, selectionTargetLanguage: to.value });
+    void translate();
+  };
+  from.addEventListener("change", changeLanguages);
+  to.addEventListener("change", changeLanguages);
+  await translate();
 }
 
-function currentSelection(): { text: string; rect?: DOMRect } {
+function showSelectionButton(text: string, rect: DOMRect, point: { x: number; y: number }): void {
+  selectionButton?.remove();
+  const host = document.createElement("div");
+  host.dataset.fanyiRoot = "trigger";
+  host.style.left = `${Math.min(point.x + 8, window.innerWidth - 42)}px`;
+  host.style.top = `${Math.min(point.y + 12, window.innerHeight - 42)}px`;
+  const shadow = host.attachShadow({ mode: "closed" });
+  shadow.innerHTML = `<style>:host { all: initial; position: fixed; z-index: 2147483647; } button { width: 32px; height: 32px; border: 1px solid rgba(32,76,61,.16); border-radius: 9px; color: #153b31; background: #b7e8ce; box-shadow: 0 6px 18px rgba(17,45,36,.22); cursor: pointer; font: 700 15px/1 sans-serif; }</style><button title="翻译选中文本" aria-label="翻译选中文本">译</button>`;
+  shadow.querySelector("button")?.addEventListener("click", () => void showSelectionTranslation(text, rect));
+  document.documentElement.append(host);
+  selectionButton = host;
+}
+
+function currentSelection(): { text: string; rect: DOMRect } | undefined {
   const selection = window.getSelection();
-  if (!selection || selection.isCollapsed || !selection.rangeCount) return { text: "" };
-  return { text: selection.toString(), rect: selection.getRangeAt(0).getBoundingClientRect() };
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return undefined;
+  const text = selection.toString();
+  if (text.trim().length < 2) return undefined;
+  return { text, rect: selection.getRangeAt(0).getBoundingClientRect() };
 }
 
-function scheduleSelectionTranslation(): void {
+function scheduleSelectionTranslation(point?: { x: number; y: number }): void {
   if (!settings.selectionEnabled || !supported) return;
   window.clearTimeout(selectionTimer);
   selectionTimer = window.setTimeout(() => {
     const selection = currentSelection();
-    if (selection.text.trim().length >= 2) void showSelectionTranslation(selection.text, selection.rect);
+    if (!selection) return;
+    if (settings.selectionTrigger === "button") showSelectionButton(selection.text, selection.rect, point ?? { x: selection.rect.right, y: selection.rect.bottom });
+    else void showSelectionTranslation(selection.text, selection.rect);
   }, 260);
 }
 
+function isInsideOverlay(event: Event): boolean {
+  const path = event.composedPath();
+  return [selectionHost, selectionButton].some((overlay) => overlay && path.includes(overlay));
+}
+
 document.addEventListener("mouseup", (event) => {
-  if (selectionHost && event.composedPath().includes(selectionHost)) return;
-  scheduleSelectionTranslation();
+  if (!isInsideOverlay(event)) scheduleSelectionTranslation({ x: event.clientX, y: event.clientY });
 });
 
 document.addEventListener("keyup", (event) => {
-  if (event.key.startsWith("Arrow") || event.key === "Shift") scheduleSelectionTranslation();
+  if (!isInsideOverlay(event) && (event.key.startsWith("Arrow") || event.key === "Shift")) scheduleSelectionTranslation();
 });
 
 document.addEventListener("pointerdown", (event) => {
-  if (selectionHost && !event.composedPath().includes(selectionHost)) {
-    selectionHost.remove();
-    selectionHost = null;
-  }
+  if (isInsideOverlay(event)) return;
+  selectionHost?.remove();
+  selectionButton?.remove();
+  selectionHost = null;
+  selectionButton = null;
 });
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
@@ -359,7 +395,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   }
   if (message.type === "TRANSLATE_CURRENT_SELECTION") {
     const selection = currentSelection();
-    void showSelectionTranslation(selection.text, selection.rect);
+    if (selection) void showSelectionTranslation(selection.text, selection.rect);
     return false;
   }
   if (message.type === "SHOW_SELECTION_TRANSLATION") {

@@ -1,5 +1,5 @@
 import type { RuntimeMessage, TranslationResponse } from "./messages";
-import { DEFAULT_SETTINGS, getSettings, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type Settings, type TranslationProvider, type TranslationStyle } from "./settings";
+import { DEFAULT_SETTINGS, getSettings, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type SelectionTrigger, type Settings, type TranslationProvider, type TranslationStyle } from "./settings";
 
 const sectionMeta: Record<string, { title: string; description: string }> = {
   general: { title: "通用设置", description: "设置默认语言与翻译行为。" },
@@ -46,6 +46,7 @@ function render(): void {
   excludedSites.value = settings.excludedSites.join("\n");
   document.querySelectorAll<HTMLInputElement>("input[name='provider']").forEach((input) => input.checked = input.value === settings.provider);
   document.querySelectorAll<HTMLInputElement>("input[name='translation-style']").forEach((input) => input.checked = input.value === settings.translationStyle);
+  document.querySelectorAll<HTMLInputElement>("input[name='selection-trigger']").forEach((input) => input.checked = input.value === settings.selectionTrigger);
   openAISettings.style.display = settings.provider === "openai" ? "block" : "none";
 }
 
@@ -98,6 +99,10 @@ document.querySelectorAll<HTMLInputElement>("input[name='provider']").forEach((i
 
 document.querySelectorAll<HTMLInputElement>("input[name='translation-style']").forEach((input) => {
   input.addEventListener("change", () => void persist({ translationStyle: input.value as TranslationStyle }));
+});
+
+document.querySelectorAll<HTMLInputElement>("input[name='selection-trigger']").forEach((input) => {
+  input.addEventListener("change", () => void persist({ selectionTrigger: input.value as SelectionTrigger }));
 });
 
 document.querySelector("#toggle-api-key")?.addEventListener("click", (event) => {

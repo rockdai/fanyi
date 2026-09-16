@@ -1,8 +1,12 @@
 export type TranslationProvider = "google" | "openai";
 export type TranslationStyle = "soft" | "underline" | "card";
+export type SelectionTrigger = "auto" | "button";
 
 export interface Settings {
   selectionEnabled: boolean;
+  selectionTrigger: SelectionTrigger;
+  selectionSourceLanguage: string;
+  selectionTargetLanguage: string;
   sourceLanguage: string;
   targetLanguage: string;
   provider: TranslationProvider;
@@ -37,6 +41,9 @@ export const TARGET_LANGUAGES = SOURCE_LANGUAGES.filter(({ code }) => code !== "
 
 export const DEFAULT_SETTINGS: Settings = {
   selectionEnabled: true,
+  selectionTrigger: "auto",
+  selectionSourceLanguage: "auto",
+  selectionTargetLanguage: "zh-CN",
   sourceLanguage: "auto",
   targetLanguage: "zh-CN",
   provider: "google",
@@ -48,16 +55,22 @@ export const DEFAULT_SETTINGS: Settings = {
   excludedSites: [],
 };
 
+export function mergeSettings(stored: Partial<Settings>): Settings {
+  const settings = { ...DEFAULT_SETTINGS, ...stored };
+  // 划词语言未单独设置过时沿用默认语言，老用户升级后划词不会突然换语言
+  settings.selectionSourceLanguage = stored.selectionSourceLanguage ?? settings.sourceLanguage;
+  settings.selectionTargetLanguage = stored.selectionTargetLanguage ?? settings.targetLanguage;
+  return settings;
+}
+
 export async function getSettings(): Promise<Settings> {
-  const stored = await chrome.storage.local.get(DEFAULT_SETTINGS as unknown as Record<string, unknown>);
-  return { ...DEFAULT_SETTINGS, ...stored } as Settings;
+  const stored = await chrome.storage.local.get<Partial<Settings>>(null);
+  return mergeSettings(stored);
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
-  const current = await getSettings();
-  const next = { ...current, ...patch };
-  await chrome.storage.local.set(next);
-  return next;
+  await chrome.storage.local.set(patch);
+  return getSettings();
 }
 
 export function normalizeDomain(value: string): string {
