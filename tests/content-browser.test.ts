@@ -5,24 +5,30 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
-const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "ownbg", "item", "cell"];
+const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "ownbg", "item", "cell"];
 const EXTERNALIZED = ["height", "lines", "flex", "grid", "grow", "ownbg"];
 
 const FIXTURE = `
 <script>
   const listeners = [];
+  const settings = {};
+  const fixedTranslations = { "Review the setup notes before you continue.": "请仔细阅读安装与配置的完整说明。" };
   window.__sent = [];
   window.chrome = {
     runtime: {
       onMessage: { addListener: (listener) => listeners.push(listener) },
       sendMessage: async (message) => {
         window.__sent.push(message);
-        if (message.type === "TRANSLATE_TEXTS") return { ok: true, translations: message.texts.map((text) => "译文 " + text) };
+        if (message.type === "TRANSLATE_TEXTS") return { ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) };
       },
     },
-    storage: { onChanged: { addListener: () => {} }, local: { get: async (defaults) => defaults } },
+    storage: { onChanged: { addListener: () => {} }, local: { get: async (defaults) => ({ ...defaults, ...settings }) } },
   };
   window.__toggle = () => listeners[0]({ type: "TOGGLE_PAGE" }, {}, () => {});
+  window.__updateSettings = (patch) => new Promise((resolve) => {
+    Object.assign(settings, patch);
+    listeners[0]({ type: "SETTINGS_UPDATED" }, {}, resolve);
+  });
 </script>
 <style>
   body { margin: 0; padding: 24px; color: #333; font-family: Georgia, serif; }
@@ -45,6 +51,8 @@ const FIXTURE = `
   <p id="grid" class="grid"><span>First column text</span><span>Second column text</span></p>
   <p id="grow" class="grow">Carefully read the installation and configuration instructions.</p>
   <p id="next">The paragraph that follows must stay clear of the translation above.</p>
+  <p id="settle" class="grow">Review the setup notes before you continue.</p>
+  <p id="after">Nothing below may be covered by the translation above.</p>
   <p id="ownbg" class="ownbg">Light text on the source's own dark background.</p>
   <ul><li id="item">List item text</li></ul>
   <table><tr><td id="cell">Table cell text</td></tr></table>
@@ -132,6 +140,34 @@ describe("immersive translation in a real page", () => {
     for (const id of ["flex", "height", "lines", "grow"]) expect(after[id].height, id).toBe(before[id].height);
     const growTranslation = reports.find((report) => report.id === "grow");
     expect(growTranslation?.bottom).toBeLessThanOrEqual(after.next.top);
+  });
+
+  it("re-places translations after font scale and style changes", async () => {
+    const probe = () => page.evaluate(() => {
+      const source = document.getElementById("settle");
+      const after = document.getElementById("after");
+      const translation = document.querySelector("#settle .fanyi-translation, #settle + .fanyi-translation");
+      if (!source || !after || !(translation instanceof HTMLElement)) throw new Error("missing #settle translation");
+      return { inside: source.contains(translation), height: source.getBoundingClientRect().height, bottom: translation.getBoundingClientRect().bottom, afterTop: after.getBoundingClientRect().top };
+    });
+
+    expect(await probe()).toMatchObject({ inside: true, height: 80 });
+
+    await page.evaluate("__updateSettings({ fontScale: 120 })");
+    const scaled = await probe();
+    expect(scaled).toMatchObject({ inside: false, height: 80 });
+    expect(scaled.bottom).toBeLessThanOrEqual(scaled.afterTop);
+
+    await page.evaluate("__updateSettings({ fontScale: 95, translationStyle: 'soft' })");
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await page.evaluate("__toggle()");
+    await page.waitForFunction(() => document.querySelector("#settle > .fanyi-translation:not([data-loading])"));
+
+    await page.evaluate("__updateSettings({ translationStyle: 'card' })");
+    const carded = await probe();
+    expect(carded).toMatchObject({ inside: false, height: 80 });
+    expect(carded.bottom).toBeLessThanOrEqual(carded.afterTop);
   });
 
   it("restores the page when translation is turned off", async () => {

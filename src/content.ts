@@ -99,9 +99,15 @@ function createTranslationElement(source: HTMLElement): HTMLDivElement {
 }
 
 function applyTranslationStyle(): void {
-  document.querySelectorAll<HTMLElement>(".fanyi-translation").forEach((element) => {
+  const translations = Array.from(document.querySelectorAll<HTMLElement>(".fanyi-translation"));
+  translations.forEach((element) => {
     element.dataset.style = settings.translationStyle;
     element.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
+  });
+  // 字号或样式变化后，原本装得下的固定高度原文可能装不下了
+  translations.forEach((element) => {
+    const source = element.parentElement;
+    if (source?.dataset.fanyiProcessed) settleTranslation(source, element);
   });
 }
 
