@@ -9,14 +9,16 @@ interface OpenAIResponse {
 }
 
 const PARAGRAPH_SEPARATOR = "%%";
+// 协议里的分隔符独占一行；原文经空白折叠后没有换行，正文内联的 %% 不会被当成边界
+const SEPARATOR_LINE = /^[ \t]*%%[ \t]*$/m;
 
 export function parseTranslations(content: string, texts: string[]): string[] {
   // 兼容服务可能把整份回复包进代码围栏；原文本身以围栏开头时分不清包装和内容，宁可保留不删
   const trimmed = content.trim();
   const sourceStartsWithFence = texts[0]?.startsWith("```") ?? false;
   const body = sourceStartsWithFence ? trimmed : trimmed.replace(/^```[^\n]*\n([\s\S]*)\n```$/, "$1");
-  // 单段模式模型直接输出，不按分隔符拆分，原文里的 %% 才能原样保留
-  const parts = texts.length === 1 ? [body] : body.split(PARAGRAPH_SEPARATOR);
+  // 单段模式模型直接输出，不按分隔符拆分
+  const parts = texts.length === 1 ? [body] : body.split(SEPARATOR_LINE);
   const translations = parts.map((part) => part.trim());
   if (translations.length !== texts.length) throw new Error("AI 返回的译文数量不一致");
   if (translations.some((translation) => !translation)) throw new Error("AI 服务未返回译文");
@@ -130,7 +132,8 @@ export function buildUserPrompt(texts: string[], sourceLanguage: string, targetL
   return `Translate${from} to ${languageName(targetLanguage)}: ${texts.join(`\n\n${PARAGRAPH_SEPARATOR}\n\n`)}`;
 }
 
-async function requestOpenAI(texts: string[], settings: Settings): Promise<string[]> {
+async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
+  if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
   const response = await fetch(endpoint, {
     method: "POST",
@@ -153,22 +156,6 @@ async function requestOpenAI(texts: string[], settings: Settings): Promise<strin
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 服务未返回译文");
   return parseTranslations(content, texts);
-}
-
-async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
-  if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
-  // 原文含 %% 时协议分不清内容和边界，这类段落各自单独请求，其余仍整批发送
-  const groups: number[][] = [];
-  const batch: number[] = [];
-  texts.forEach((text, index) => (text.includes(PARAGRAPH_SEPARATOR) ? groups.push([index]) : batch.push(index)));
-  if (batch.length) groups.push(batch);
-  const results = new Array<string>(texts.length);
-  // 串行发送：含 %% 的段落罕见，且一旦失败不会留下在途请求；真嫌慢再加有界并发池
-  for (const indexes of groups) {
-    const translations = await requestOpenAI(indexes.map((index) => texts[index]), settings);
-    indexes.forEach((index, offset) => { results[index] = translations[offset]; });
-  }
-  return results;
 }
 
 export async function translateTexts(texts: string[], settings: Settings, sourceLanguage: string, targetLanguage: string): Promise<string[]> {

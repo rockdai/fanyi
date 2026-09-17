@@ -14,6 +14,11 @@ describe("AI translation parser", () => {
     expect(parseTranslations("  用 %% 打印百分号  ", ["Use %% for a percent sign"])).toEqual(["用 %% 打印百分号"]);
   });
 
+  it("splits only on a standalone %% line, so an inline %% stays inside its paragraph", () => {
+    expect(parseTranslations("用 %% 打印百分号\n\n%%\n\n第二段", ["Use %% for a percent sign", "Second"])).toEqual(["用 %% 打印百分号", "第二段"]);
+    expect(parseTranslations("%% 注释\n\n%%\n\n结尾 %%", ["%% comment", "trailing %%"])).toEqual(["%% 注释", "结尾 %%"]);
+  });
+
   it("strips an outer code fence the model added around plain text", () => {
     expect(parseTranslations("```\n你好\n\n%%\n\n世界\n```", ["Hello", "World"])).toEqual(["你好", "世界"]);
     expect(parseTranslations("```\n介绍\n\n%%\n\n```js\nrunB()\n```\n```", ["Intro", codeB])).toEqual(["介绍", "```js\nrunB()\n```"]);
@@ -32,6 +37,7 @@ describe("AI translation parser", () => {
 
   it("rejects blank translations", () => {
     expect(() => parseTranslations(" \n ", ["Blank"])).toThrow("未返回译文");
+    expect(() => parseTranslations("你好\n\n%%\n\n \n\n%%\n\n世界", ["Hello", "Blank", "World"])).toThrow("未返回译文");
     expect(() => parseTranslations("你好\n\n%%\n\n", ["Hello", "World"])).toThrow("未返回译文");
   });
 });
@@ -72,27 +78,20 @@ describe("OpenAI batch translation", () => {
     expect(messages[1]).toEqual({ role: "user", content: "Translate from English to Simplified Chinese: Hello\n\n%%\n\nWorld" });
   });
 
-  it("sends paragraphs containing a literal %% on their own and keeps the batch order", async () => {
-    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
-      const user = userMessageOf(init)[1].content;
-      return user.includes("literal percent") ? reply("用 %% 打印字面量百分号") : reply("第二段\n\n%%\n\n第三段");
-    });
+  it("keeps a paragraph containing a literal %% in the same single request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply("用 %% 打印字面量百分号\n\n%%\n\n第二段\n\n%%\n\n第三段"));
     vi.stubGlobal("fetch", fetchMock);
     const texts = ["Use %% to print a literal percent sign.", "Second paragraph.", "Third paragraph."];
     await expect(translateTexts(texts, settings, "en", "zh-CN")).resolves.toEqual(["用 %% 打印字面量百分号", "第二段", "第三段"]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const userMessages = fetchMock.mock.calls.map(([, init]) => userMessageOf(init)[1].content);
-    expect(userMessages).toContain("Translate from English to Simplified Chinese: Use %% to print a literal percent sign.");
-    expect(userMessages).toContain("Translate from English to Simplified Chinese: Second paragraph.\n\n%%\n\nThird paragraph.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(userMessageOf(init)[1].content).toBe("Translate from English to Simplified Chinese: Use %% to print a literal percent sign.\n\n%%\n\nSecond paragraph.\n\n%%\n\nThird paragraph.");
   });
 
-  it("stops at the first failed sub-request and starts no further ones", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }))
-      .mockResolvedValue(reply("不应到达"));
+  it("propagates the service error message and sends nothing else", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }));
     vi.stubGlobal("fetch", fetchMock);
-    const texts = ["Use %% once.", "Use %% twice.", "Plain paragraph."];
-    await expect(translateTexts(texts, settings, "en", "zh-CN")).rejects.toThrow("rate limited");
+    await expect(translateTexts(["Use %% once.", "Plain paragraph."], settings, "en", "zh-CN")).rejects.toThrow("rate limited");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
