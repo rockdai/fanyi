@@ -3,26 +3,36 @@ import { DEFAULT_SETTINGS } from "../src/settings";
 import { buildSystemPrompt, buildUserPrompt, parseTranslations, translateTexts } from "../src/translation";
 
 describe("AI translation parser", () => {
+  const codeA = "```js runA() ```";
+  const codeB = "```js runB() ```";
+
   it("splits multi-paragraph output on the %% separator", () => {
-    expect(parseTranslations("你好\n\n%%\n\n世界\n", 2)).toEqual(["你好", "世界"]);
+    expect(parseTranslations("你好\n\n%%\n\n世界\n", ["Hello", "World"])).toEqual(["你好", "世界"]);
   });
 
   it("returns single-paragraph output as is, keeping a literal %%", () => {
-    expect(parseTranslations("  用 %% 打印百分号  ", 1)).toEqual(["用 %% 打印百分号"]);
+    expect(parseTranslations("  用 %% 打印百分号  ", ["Use %% for a percent sign"])).toEqual(["用 %% 打印百分号"]);
   });
 
-  it("strips an outer code fence but keeps fences inside a paragraph", () => {
-    expect(parseTranslations("```\n你好\n\n%%\n\n世界\n```", 2)).toEqual(["你好", "世界"]);
-    expect(parseTranslations("```js code``` 示例", 1)).toEqual(["```js code``` 示例"]);
+  it("strips an outer code fence the model added around plain text", () => {
+    expect(parseTranslations("```\n你好\n\n%%\n\n世界\n```", ["Hello", "World"])).toEqual(["你好", "世界"]);
+    expect(parseTranslations("```\n介绍\n\n%%\n\n```js\nrunB()\n```\n```", ["Intro", codeB])).toEqual(["介绍", "```js\nrunB()\n```"]);
+  });
+
+  it("keeps code fences that belong to the source paragraphs", () => {
+    expect(parseTranslations("```js code``` 示例", ["```js code``` example"])).toEqual(["```js code``` 示例"]);
+    expect(parseTranslations("```js\nrunA()\n```", [codeA])).toEqual(["```js\nrunA()\n```"]);
+    expect(parseTranslations("```js\nrunA()\n```\n\n%%\n\n```js\nrunB()\n```", [codeA, codeB])).toEqual(["```js\nrunA()\n```", "```js\nrunB()\n```"]);
+    expect(parseTranslations("```\n```js\nrunA()\n```\n```", [codeA])).toEqual(["```\n```js\nrunA()\n```\n```"]);
   });
 
   it("rejects a result with missing items", () => {
-    expect(() => parseTranslations("你好", 2)).toThrow("译文数量");
+    expect(() => parseTranslations("你好", ["Hello", "World"])).toThrow("译文数量");
   });
 
   it("rejects blank translations", () => {
-    expect(() => parseTranslations(" \n ", 1)).toThrow("未返回译文");
-    expect(() => parseTranslations("你好\n\n%%\n\n", 2)).toThrow("未返回译文");
+    expect(() => parseTranslations(" \n ", ["Blank"])).toThrow("未返回译文");
+    expect(() => parseTranslations("你好\n\n%%\n\n", ["Hello", "World"])).toThrow("未返回译文");
   });
 });
 
@@ -74,6 +84,16 @@ describe("OpenAI batch translation", () => {
     const userMessages = fetchMock.mock.calls.map(([, init]) => userMessageOf(init)[1].content);
     expect(userMessages).toContain("Translate from English to Simplified Chinese: Use %% to print a literal percent sign.");
     expect(userMessages).toContain("Translate from English to Simplified Chinese: Second paragraph.\n\n%%\n\nThird paragraph.");
+  });
+
+  it("stops at the first failed sub-request and starts no further ones", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }))
+      .mockResolvedValue(reply("不应到达"));
+    vi.stubGlobal("fetch", fetchMock);
+    const texts = ["Use %% once.", "Use %% twice.", "Plain paragraph."];
+    await expect(translateTexts(texts, settings, "en", "zh-CN")).rejects.toThrow("rate limited");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a whitespace-only reply instead of showing an empty translation", async () => {
