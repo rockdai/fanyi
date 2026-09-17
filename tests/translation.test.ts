@@ -1,47 +1,84 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/settings";
-import { buildTranslationPrompt, parseTranslations, translateTexts } from "../src/translation";
+import { buildSystemPrompt, buildUserPrompt, parseTranslations, translateTexts } from "../src/translation";
 
 describe("AI translation parser", () => {
   it("splits multi-paragraph output on the %% separator", () => {
     expect(parseTranslations("你好\n\n%%\n\n世界\n", 2)).toEqual(["你好", "世界"]);
   });
 
-  it("returns single-paragraph output as is", () => {
-    expect(parseTranslations("  你好  ", 1)).toEqual(["你好"]);
+  it("returns single-paragraph output as is, keeping a literal %%", () => {
+    expect(parseTranslations("  用 %% 打印百分号  ", 1)).toEqual(["用 %% 打印百分号"]);
+  });
+
+  it("strips an outer code fence but keeps fences inside a paragraph", () => {
+    expect(parseTranslations("```\n你好\n\n%%\n\n世界\n```", 2)).toEqual(["你好", "世界"]);
+    expect(parseTranslations("```js code``` 示例", 1)).toEqual(["```js code``` 示例"]);
   });
 
   it("rejects a result with missing items", () => {
     expect(() => parseTranslations("你好", 2)).toThrow("译文数量");
   });
+
+  it("rejects blank translations", () => {
+    expect(() => parseTranslations(" \n ", 1)).toThrow("未返回译文");
+    expect(() => parseTranslations("你好\n\n%%\n\n", 2)).toThrow("未返回译文");
+  });
 });
 
 describe("AI translation prompt", () => {
   it("names the target language instead of passing its code", () => {
-    const prompt = buildTranslationPrompt("zh-TW");
+    const prompt = buildSystemPrompt("zh-TW");
     expect(prompt).toContain("You are a professional Traditional Chinese native translator");
     expect(prompt).not.toContain("zh-TW");
   });
 
   it("falls back to the raw code for unknown languages", () => {
-    expect(buildTranslationPrompt("pt-BR")).toContain("translate text into pt-BR.");
+    expect(buildSystemPrompt("pt-BR")).toContain("translate text into pt-BR.");
+  });
+
+  it("mentions the source language in the user prompt only when it is not auto", () => {
+    expect(buildUserPrompt(["Hello"], "de", "en")).toBe("Translate from German to English: Hello");
+    expect(buildUserPrompt(["Hello"], "auto", "ja")).toBe("Translate to Japanese: Hello");
+    expect(buildUserPrompt(["A", "B"], "pt-BR", "zh-CN")).toBe("Translate from pt-BR to Simplified Chinese: A\n\n%%\n\nB");
   });
 });
 
 describe("OpenAI batch translation", () => {
+  const settings = { ...DEFAULT_SETTINGS, provider: "openai" as const, apiKey: "test-key" };
+  const reply = (content: string) => new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+  const userMessageOf = (init: RequestInit) => (JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> }).messages;
+
   afterEach(() => vi.unstubAllGlobals());
 
   it("joins paragraphs with %% and maps the separated reply back", async () => {
-    const reply = { choices: [{ message: { content: "你好\n\n%%\n\n世界" } }] };
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(reply), { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(reply("你好\n\n%%\n\n世界"));
     vi.stubGlobal("fetch", fetchMock);
-    const settings = { ...DEFAULT_SETTINGS, provider: "openai" as const, apiKey: "test-key" };
     await expect(translateTexts(["Hello", "World"], settings, "en", "zh-CN")).resolves.toEqual(["你好", "世界"]);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
-    expect(body.messages[0]).toEqual({ role: "system", content: buildTranslationPrompt("zh-CN") });
-    expect(body.messages[0].content).toContain("professional Simplified Chinese native translator");
-    expect(body.messages[1]).toEqual({ role: "user", content: "Hello\n\n%%\n\nWorld" });
+    const messages = userMessageOf(init);
+    expect(messages[0]).toEqual({ role: "system", content: buildSystemPrompt("zh-CN") });
+    expect(messages[0].content).toContain("professional Simplified Chinese native translator");
+    expect(messages[1]).toEqual({ role: "user", content: "Translate from English to Simplified Chinese: Hello\n\n%%\n\nWorld" });
+  });
+
+  it("sends paragraphs containing a literal %% on their own and keeps the batch order", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const user = userMessageOf(init)[1].content;
+      return user.includes("literal percent") ? reply("用 %% 打印字面量百分号") : reply("第二段\n\n%%\n\n第三段");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const texts = ["Use %% to print a literal percent sign.", "Second paragraph.", "Third paragraph."];
+    await expect(translateTexts(texts, settings, "en", "zh-CN")).resolves.toEqual(["用 %% 打印字面量百分号", "第二段", "第三段"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const userMessages = fetchMock.mock.calls.map(([, init]) => userMessageOf(init)[1].content);
+    expect(userMessages).toContain("Translate from English to Simplified Chinese: Use %% to print a literal percent sign.");
+    expect(userMessages).toContain("Translate from English to Simplified Chinese: Second paragraph.\n\n%%\n\nThird paragraph.");
+  });
+
+  it("rejects a whitespace-only reply instead of showing an empty translation", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(reply(" \n ")));
+    await expect(translateTexts(["Blank"], settings, "en", "zh-CN")).rejects.toThrow("未返回译文");
   });
 });
 

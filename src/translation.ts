@@ -11,13 +11,17 @@ interface OpenAIResponse {
 const PARAGRAPH_SEPARATOR = "%%";
 
 export function parseTranslations(content: string, expectedLength: number): string[] {
-  // ponytail: 原文本身含 %% 会错位，与沉浸式翻译同样的取舍；真遇到再换转义方案
-  const parts = content.trim().split(PARAGRAPH_SEPARATOR).map((part) => part.trim());
-  if (parts.length !== expectedLength) throw new Error("AI 返回的译文数量不一致");
-  return parts;
+  // 兼容服务可能把整份回复包进代码围栏，只剥独占一行的外层围栏，不动正文里的
+  const body = content.trim().replace(/^```[^\n]*\n([\s\S]*)\n```$/, "$1");
+  // 单段模式模型直接输出，不按分隔符拆分，原文里的 %% 才能原样保留
+  const parts = expectedLength === 1 ? [body] : body.split(PARAGRAPH_SEPARATOR);
+  const translations = parts.map((part) => part.trim());
+  if (translations.length !== expectedLength) throw new Error("AI 返回的译文数量不一致");
+  if (translations.some((translation) => !translation)) throw new Error("AI 服务未返回译文");
+  return translations;
 }
 
-export function buildTranslationPrompt(targetLanguage: string): string {
+export function buildSystemPrompt(targetLanguage: string): string {
   // 模型对 zh-CN/zh-TW 这类代码的理解不稳定，prompt 里用可读的英文语言名
   const to = languageName(targetLanguage);
   return `You are a professional ${to} native translator who needs to fluently translate text into ${to}.
@@ -119,10 +123,13 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
-async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
-  if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
+export function buildUserPrompt(texts: string[], sourceLanguage: string, targetLanguage: string): string {
+  const from = sourceLanguage === "auto" ? "" : ` from ${languageName(sourceLanguage)}`;
+  return `Translate${from} to ${languageName(targetLanguage)}: ${texts.join(`\n\n${PARAGRAPH_SEPARATOR}\n\n`)}`;
+}
+
+async function requestOpenAI(texts: string[], settings: Settings): Promise<string[]> {
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const userContent = texts.join(`\n\n${PARAGRAPH_SEPARATOR}\n\n`);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -133,8 +140,8 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
       model: settings.apiModel,
       temperature: settings.temperature,
       messages: [
-        { role: "system", content: buildTranslationPrompt(settings.targetLanguage) },
-        { role: "user", content: userContent },
+        { role: "system", content: buildSystemPrompt(settings.targetLanguage) },
+        { role: "user", content: buildUserPrompt(texts, settings.sourceLanguage, settings.targetLanguage) },
       ],
     }),
   });
@@ -144,6 +151,21 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 服务未返回译文");
   return parseTranslations(content, texts.length);
+}
+
+async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
+  if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
+  // 原文含 %% 时协议分不清内容和边界，这类段落各自单独请求，其余仍整批发送
+  const groups: number[][] = [];
+  const batch: number[] = [];
+  texts.forEach((text, index) => (text.includes(PARAGRAPH_SEPARATOR) ? groups.push([index]) : batch.push(index)));
+  if (batch.length) groups.push(batch);
+  const results = new Array<string>(texts.length);
+  await Promise.all(groups.map(async (indexes) => {
+    const translations = await requestOpenAI(indexes.map((index) => texts[index]), settings);
+    indexes.forEach((index, offset) => { results[index] = translations[offset]; });
+  }));
+  return results;
 }
 
 export async function translateTexts(texts: string[], settings: Settings, sourceLanguage: string, targetLanguage: string): Promise<string[]> {
