@@ -2,7 +2,7 @@ export type TranslationProvider = "google" | "openai";
 export type TranslationStyle = "soft" | "underline" | "card";
 export type SelectionTrigger = "auto" | "button";
 export type LoadingStyle = "spinner" | "none";
-export type ApiVendor = "auto" | "none" | "openai" | "deepseek" | "kimi" | "zhipu" | "qwen" | "gemini" | "openrouter" | "vllm";
+export type ApiVendor = "none" | "openai" | "deepseek" | "kimi" | "zhipu" | "qwen" | "gemini" | "openrouter" | "vllm";
 
 export interface Settings {
   selectionEnabled: boolean;
@@ -75,7 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   apiBaseUrl: "https://api.openai.com/v1",
   apiKey: "",
   apiModel: "gpt-4o-mini",
-  apiVendor: "auto",
+  apiVendor: "none",
   temperature: 1,
   extraBody: "",
   maxParagraphsPerRequest: 4,

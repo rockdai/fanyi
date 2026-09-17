@@ -127,24 +127,18 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
-// 各家关闭思考的参数互不兼容，Gemini 的 OpenAI 兼容层和 OpenAI 同名
-const THINKING_OFF: Record<Exclude<ApiVendor, "auto" | "none">, Record<string, unknown>> = {
+// 各家关闭思考的参数互不兼容；Kimi 非思考模式温度固定 0.6，其他值会报错
+const THINKING_OFF: Record<ApiVendor, Record<string, unknown>> = {
+  none: {},
   openai: { reasoning_effort: "none" },
   gemini: { reasoning_effort: "none" },
   deepseek: { thinking: { type: "disabled" } },
-  kimi: { thinking: { type: "disabled" } },
+  kimi: { thinking: { type: "disabled" }, temperature: 0.6 },
   zhipu: { thinking: { type: "disabled" } },
   qwen: { enable_thinking: false },
   openrouter: { reasoning: { enabled: false } },
   vllm: { chat_template_kwargs: { enable_thinking: false } },
 };
-const ALL_THINKING_OFF = Object.values(THINKING_OFF).reduce((all, params) => ({ ...all, ...params }), {});
-const rejectedPresets = new Set<string>();
-
-function thinkingPreset(vendor: ApiVendor): Record<string, unknown> {
-  if (vendor === "none") return {};
-  return vendor === "auto" ? ALL_THINKING_OFF : THINKING_OFF[vendor];
-}
 
 function parseExtraBody(extraBody: string): Record<string, unknown> {
   if (!extraBody.trim()) return {};
@@ -163,26 +157,20 @@ export function buildUserPrompt(texts: string[], sourceLanguage: string, targetL
 async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
   if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const custom = parseExtraBody(settings.extraBody);
-  const messages = [
-    { role: "system", content: buildSystemPrompt(settings.targetLanguage) },
-    { role: "user", content: buildUserPrompt(texts, settings.sourceLanguage, settings.targetLanguage) },
-  ];
-  // 用户自填的参数盖过预设；model 和 temperature 有专属输入框，不被覆盖
-  const request = (preset: Record<string, unknown>) => fetch(endpoint, {
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
-    body: JSON.stringify({ ...preset, ...custom, model: settings.apiModel, temperature: settings.temperature, messages }),
+    body: JSON.stringify({
+      model: settings.apiModel,
+      temperature: settings.temperature,
+      ...THINKING_OFF[settings.apiVendor],
+      ...parseExtraBody(settings.extraBody),
+      messages: [
+        { role: "system", content: buildSystemPrompt(settings.targetLanguage) },
+        { role: "user", content: buildUserPrompt(texts, settings.sourceLanguage, settings.targetLanguage) },
+      ],
+    }),
   });
-
-  const presetKey = `${endpoint} ${settings.apiModel} ${settings.apiVendor}`;
-  const preset = rejectedPresets.has(presetKey) ? {} : thinkingPreset(settings.apiVendor);
-  let response = await request(preset);
-  // 不认识这些参数的模型会 400（如 gpt-4o 收到 reasoning_effort），去掉预设重试一次并记住；用户自填的参数不动，错误照常暴露
-  if (response.status === 400 && Object.keys(preset).length) {
-    response = await request({});
-    if (response.status !== 400) rejectedPresets.add(presetKey);
-  }
 
   const payload = (await response.json().catch(() => ({}))) as OpenAIResponse;
   if (!response.ok) throw new Error(payload.error?.message || `AI 服务请求失败（${response.status}）`);
@@ -191,7 +179,15 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
   return parseTranslations(content, texts);
 }
 
+let cachedApiConfig = "";
+
 export async function translateTexts(texts: string[], settings: Settings, sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+  // 接口配置变了，旧译文不再代表当前配置的结果，连接测试也必须真的发请求
+  const apiConfig = JSON.stringify([settings.apiBaseUrl, settings.apiModel, settings.apiVendor, settings.temperature, settings.extraBody]);
+  if (apiConfig !== cachedApiConfig) {
+    translationCache.clear();
+    cachedApiConfig = apiConfig;
+  }
   const normalizedTexts = texts.map((text) => text.trim().slice(0, 5000));
   const results = new Array<string>(texts.length);
   const missing: Array<{ index: number; text: string; key: string }> = [];

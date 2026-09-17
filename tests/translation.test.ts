@@ -104,69 +104,61 @@ describe("OpenAI batch translation", () => {
 
   const bodyOf = (init: RequestInit) => JSON.parse(String(init.body)) as Record<string, unknown>;
   const thinkingKeys = ["thinking", "enable_thinking", "reasoning_effort", "reasoning", "chat_template_kwargs"];
+  const thinkingKeysOf = (init: RequestInit) => Object.keys(bodyOf(init)).filter((key) => thinkingKeys.includes(key));
 
-  it("sends every vendor's thinking-off parameter in auto mode without touching the dedicated fields", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(reply("不思考"));
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(translateTexts(["No thinking"], settings, "en", "zh-CN")).resolves.toEqual(["不思考"]);
-    const body = bodyOf(fetchMock.mock.calls[0][1] as RequestInit);
-    expect(body).toMatchObject({
-      thinking: { type: "disabled" },
-      enable_thinking: false,
-      reasoning_effort: "none",
-      reasoning: { enabled: false },
-      chat_template_kwargs: { enable_thinking: false },
-      model: DEFAULT_SETTINGS.apiModel,
-      temperature: DEFAULT_SETTINGS.temperature,
-    });
-  });
-
-  it("sends only the chosen vendor's parameter", async () => {
+  it("sends only the chosen vendor's thinking-off parameter", async () => {
     const fetchMock = vi.fn().mockResolvedValue(reply("通义"));
     vi.stubGlobal("fetch", fetchMock);
     await expect(translateTexts(["Qwen only"], { ...settings, apiVendor: "qwen" }, "en", "zh-CN")).resolves.toEqual(["通义"]);
     const body = bodyOf(fetchMock.mock.calls[0][1] as RequestInit);
-    expect(body.enable_thinking).toBe(false);
-    expect(Object.keys(body).filter((key) => thinkingKeys.includes(key))).toEqual(["enable_thinking"]);
+    expect(body).toMatchObject({ enable_thinking: false, model: DEFAULT_SETTINGS.apiModel, temperature: DEFAULT_SETTINGS.temperature });
+    expect(thinkingKeysOf(fetchMock.mock.calls[0][1] as RequestInit)).toEqual(["enable_thinking"]);
   });
 
-  it("sends no thinking parameter when the vendor is none", async () => {
+  it("sends no thinking parameter by default, when no vendor is chosen", async () => {
     const fetchMock = vi.fn().mockResolvedValue(reply("默认"));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(translateTexts(["Vendor none"], { ...settings, apiVendor: "none" }, "en", "zh-CN")).resolves.toEqual(["默认"]);
-    expect(Object.keys(bodyOf(fetchMock.mock.calls[0][1] as RequestInit)).filter((key) => thinkingKeys.includes(key))).toEqual([]);
+    expect(settings.apiVendor).toBe("none");
+    await expect(translateTexts(["Vendor none"], settings, "en", "zh-CN")).resolves.toEqual(["默认"]);
+    expect(thinkingKeysOf(fetchMock.mock.calls[0][1] as RequestInit)).toEqual([]);
   });
 
-  it("lets the custom extra body override the vendor preset but not the dedicated fields", async () => {
+  it("pins the temperature Kimi requires in non-thinking mode", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply("月之暗面"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["Kimi temperature"], { ...settings, apiVendor: "kimi" }, "en", "zh-CN")).resolves.toEqual(["月之暗面"]);
+    expect(bodyOf(fetchMock.mock.calls[0][1] as RequestInit)).toMatchObject({ thinking: { type: "disabled" }, temperature: 0.6 });
+  });
+
+  it("lets the custom extra body override the vendor preset but never the messages", async () => {
     const fetchMock = vi.fn().mockResolvedValue(reply("自定义"));
     vi.stubGlobal("fetch", fetchMock);
-    const extraBody = '{"reasoning_effort":"low","max_tokens":4096,"model":"ignored"}';
+    const extraBody = '{"reasoning_effort":"low","max_tokens":4096,"messages":[]}';
     await expect(translateTexts(["Custom wins"], { ...settings, apiVendor: "openai", extraBody }, "en", "zh-CN")).resolves.toEqual(["自定义"]);
-    const body = bodyOf(fetchMock.mock.calls[0][1] as RequestInit);
-    expect(body).toMatchObject({ reasoning_effort: "low", max_tokens: 4096, model: DEFAULT_SETTINGS.apiModel });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(bodyOf(init)).toMatchObject({ reasoning_effort: "low", max_tokens: 4096 });
+    expect(userMessageOf(init)[1].content).toBe("Translate from English to Simplified Chinese: Custom wins");
   });
 
-  it("retries without the preset when the service rejects it with 400 and remembers that", async () => {
-    const rejected = () => new Response(JSON.stringify({ error: { message: "Unrecognized request argument supplied: thinking" } }), { status: 400 });
-    const fetchMock = vi.fn().mockResolvedValueOnce(rejected()).mockImplementation(() => reply("回退"));
+  it("surfaces a 400 from the service without retrying", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "Unsupported parameter: 'reasoning_effort'" } }), { status: 400 }));
     vi.stubGlobal("fetch", fetchMock);
-    const legacy = { ...settings, apiModel: "gpt-4o" };
-    await expect(translateTexts(["Preset rejected"], legacy, "en", "zh-CN")).resolves.toEqual(["回退"]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(Object.keys(bodyOf(fetchMock.mock.calls[0][1] as RequestInit))).toEqual(expect.arrayContaining(thinkingKeys));
-    expect(Object.keys(bodyOf(fetchMock.mock.calls[1][1] as RequestInit)).filter((key) => thinkingKeys.includes(key))).toEqual([]);
-    expect(userMessageOf(fetchMock.mock.calls[1][1] as RequestInit)[1].content).toBe("Translate from English to Simplified Chinese: Preset rejected");
-
-    await expect(translateTexts(["Preset remembered"], legacy, "en", "zh-CN")).resolves.toEqual(["回退"]);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(Object.keys(bodyOf(fetchMock.mock.calls[2][1] as RequestInit)).filter((key) => thinkingKeys.includes(key))).toEqual([]);
-  });
-
-  it("surfaces a 400 caused by the user's own extra body instead of retrying", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "Unrecognized request argument supplied: foo" } }), { status: 400 }));
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(translateTexts(["Custom rejected"], { ...settings, apiVendor: "none", extraBody: '{"foo":1}' }, "en", "zh-CN")).rejects.toThrow("Unrecognized request argument supplied: foo");
+    await expect(translateTexts(["Preset rejected"], { ...settings, apiVendor: "openai" }, "en", "zh-CN")).rejects.toThrow("Unsupported parameter");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops cached translations once the API configuration changes", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => reply("配置"));
+    vi.stubGlobal("fetch", fetchMock);
+    const qwen = { ...settings, apiVendor: "qwen" as const, extraBody: '{"max_tokens":20}' };
+    await expect(translateTexts(["Config change"], qwen, "en", "zh-CN")).resolves.toEqual(["配置"]);
+    await expect(translateTexts(["Config change"], qwen, "en", "zh-CN")).resolves.toEqual(["配置"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(translateTexts(["Config change"], { ...qwen, extraBody: "{oops" }, "en", "zh-CN")).rejects.toThrow("额外请求参数");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(translateTexts(["Config change"], { ...qwen, apiVendor: "deepseek" }, "en", "zh-CN")).resolves.toEqual(["配置"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(thinkingKeysOf(fetchMock.mock.calls[1][1] as RequestInit)).toEqual(["thinking"]);
   });
 
   it("rejects an extra body that is not a JSON object before sending anything", async () => {
