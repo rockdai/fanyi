@@ -1,5 +1,7 @@
 import type { Settings } from "./settings";
 
+export const TRANSLATE_PORT = "fanyi-translate";
+
 export interface TranslateTextsMessage {
   type: "TRANSLATE_TEXTS";
   texts: string[];

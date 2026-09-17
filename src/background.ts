@@ -1,4 +1,4 @@
-import type { RuntimeMessage, TranslationResponse } from "./messages";
+import { TRANSLATE_PORT, type RuntimeMessage, type TestProviderMessage, type TranslateTextsMessage, type TranslationResponse } from "./messages";
 import { getSettings } from "./settings";
 import { translateTexts } from "./translation";
 
@@ -46,6 +46,22 @@ chrome.commands.onCommand.addListener(async (command) => {
   await chrome.tabs.sendMessage(tab.id, { type } satisfies RuntimeMessage).catch(() => undefined);
 });
 
+async function translate(message: TranslateTextsMessage | TestProviderMessage, signal?: AbortSignal): Promise<TranslationResponse> {
+  holdWorker();
+  try {
+    const settings = await getSettings();
+    const texts = message.type === "TEST_PROVIDER" ? ["The world is full of things worth understanding."] : message.texts;
+    const sourceLanguage = message.type === "TEST_PROVIDER" ? "en" : message.sourceLanguage;
+    const targetLanguage = message.type === "TEST_PROVIDER" ? settings.targetLanguage : message.targetLanguage;
+    const translations = await translateTexts(texts, settings, sourceLanguage, targetLanguage, signal);
+    return { ok: true, translations };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "翻译失败，请稍后重试" };
+  } finally {
+    releaseWorker();
+  }
+}
+
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message.type === "PAGE_STATE_CHANGED") {
     if (sender.tab?.id) {
@@ -54,24 +70,20 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     }
     return false;
   }
-
-  if (message.type !== "TRANSLATE_TEXTS" && message.type !== "TEST_PROVIDER") return false;
-
-  void (async () => {
-    holdWorker();
-    try {
-      const settings = await getSettings();
-      const texts = message.type === "TEST_PROVIDER" ? ["The world is full of things worth understanding."] : message.texts;
-      const sourceLanguage = message.type === "TEST_PROVIDER" ? "en" : message.sourceLanguage;
-      const targetLanguage = message.type === "TEST_PROVIDER" ? settings.targetLanguage : message.targetLanguage;
-      const translations = await translateTexts(texts, settings, sourceLanguage, targetLanguage);
-      sendResponse({ ok: true, translations } satisfies TranslationResponse);
-    } catch (error) {
-      const description = error instanceof Error ? error.message : "翻译失败，请稍后重试";
-      sendResponse({ ok: false, error: description } satisfies TranslationResponse);
-    } finally {
-      releaseWorker();
-    }
-  })();
+  if (message.type !== "TEST_PROVIDER") return false;
+  void translate(message).then(sendResponse);
   return true;
+});
+
+// 页面翻译走长连接：内容脚本停止或重启时断开端口，后台随之中止未完成的请求和重试
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== TRANSLATE_PORT) return;
+  const controller = new AbortController();
+  port.onDisconnect.addListener(() => controller.abort());
+  port.onMessage.addListener((message: RuntimeMessage) => {
+    if (message.type !== "TRANSLATE_TEXTS") return;
+    void translate(message, controller.signal).then((response) => {
+      if (!controller.signal.aborted) port.postMessage(response);
+    });
+  });
 });
