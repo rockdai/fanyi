@@ -18,6 +18,8 @@ const INNER = "Inner paragraph inside a quote wrapper.";
 const SIDEBAR = "Sidebar paragraph text.";
 const FAR = "A paragraph far below the fold.";
 const MASTHEAD = "Masthead text in the header.";
+const FRESH_FIRST = "A paragraph added after the first run.";
+const FRESH_SECOND = "Another paragraph added after the first run.";
 
 const ARTICLE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${TITLE}</title></head>
 <body style="margin: 0; padding: 24px; font: 16px/1.5 Georgia, serif">
@@ -244,6 +246,23 @@ describe("the built extension in Chrome", () => {
     expect(await page.title()).toBe(`译文 ${TITLE} | ${TITLE}`);
     expect(googleRequests.length).toBe(requestsBefore);
     await askActiveTab("TOGGLE_PAGE");
+  }, 30000);
+
+  it("requests only the paragraphs that are new and keeps every translation on its own paragraph", async () => {
+    // 新段落夹在已缓存的段落之间，同一批请求里既有命中也有未命中，回填时必须按原位置归位
+    await page.evaluate(([first, second]) => {
+      document.querySelector("#heading")?.insertAdjacentHTML("afterend", `<p id="fresh-first">${first}</p>`);
+      document.querySelector("#body")?.insertAdjacentHTML("afterend", `<p id="fresh-second">${second}</p>`);
+    }, [FRESH_FIRST, FRESH_SECOND]);
+    const requestsBefore = googleRequests.length;
+    await askActiveTab("TOGGLE_PAGE");
+    await settled(8);
+    expect(googleRequests.slice(requestsBefore).flat().sort()).toEqual([FRESH_FIRST, FRESH_SECOND].sort());
+    for (const [id, text] of [["heading", HEADING], ["fresh-first", FRESH_FIRST], ["lead", LEAD], ["body", BODY], ["fresh-second", FRESH_SECOND], ["inner", INNER], ["sidebar", SIDEBAR], ["far", FAR]]) {
+      expect(await translationOf(id)).toBe(`译文 ${text}`);
+    }
+    await askActiveTab("TOGGLE_PAGE");
+    await page.evaluate(() => document.querySelectorAll("#fresh-first, #fresh-second").forEach((element) => element.remove()));
   }, 30000);
 
   it("refuses a page that is already in the target language", async () => {

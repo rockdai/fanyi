@@ -462,4 +462,14 @@ describe("Google batch translation", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(["只有一个"])));
     await expect(translateTexts(["One", "Two"], DEFAULT_SETTINGS, "en", "zh-CN")).rejects.toThrow("格式异常");
   });
+
+  it("sends only the texts missing from the cache and puts each translation back in its own slot", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(["已缓存"])));
+    await expect(translateTexts(["Cached before"], DEFAULT_SETTINGS, "en", "zh-CN")).resolves.toEqual(["已缓存"]);
+    const fetchMock = vi.fn().mockResolvedValue(json(["新一", "新二"]));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["New first", "Cached before", "New second"], DEFAULT_SETTINGS, "en", "zh-CN")).resolves.toEqual(["新一", "已缓存", "新二"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body)).toBe("q=New+first&q=New+second");
+  });
 });
