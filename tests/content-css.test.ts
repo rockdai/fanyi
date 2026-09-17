@@ -42,3 +42,12 @@ describe("brand logo", () => {
     expect(content).toMatch(/span \{ transform: translateY\(-1px\); \}/);
   });
 });
+
+describe("settings page", () => {
+  it("ends the general section with the reset button and shows no eyebrow label above the title", () => {
+    const general = options.match(/<section class="settings-section active" id="general">([\s\S]*?)<\/section>/)?.[1] ?? "";
+    expect(general.trimEnd()).toMatch(/id="reset-settings">恢复默认设置<\/button>$/);
+    expect(options.match(/id="reset-settings"/g)).toHaveLength(1);
+    expect(options).not.toContain("PREFERENCES");
+  });
+});
