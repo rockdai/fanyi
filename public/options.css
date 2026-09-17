@@ -85,6 +85,7 @@ nav button.active > span { color: #25634f; }
 .privacy-icon { width: 48px; height: 48px; margin: 0 auto 15px; border-radius: 16px; display: grid; place-items: center; color: #235943; background: #dff2e8; font-size: 25px; }
 .privacy-hero h2 { margin: 0 0 8px; font-size: 21px; }
 .privacy-hero p { color: #84948d; font-size: 13px; }
+.privacy-hero a { display: inline-block; margin-top: 4px; color: #2a765e; font-size: 13px; }
 .privacy-list > div { display: flex; align-items: flex-start; gap: 15px; padding: 15px 0; border-bottom: 1px solid #edf1ef; }
 .privacy-list > div:last-child { border-bottom: 0; }
 .privacy-list span { color: #82a294; font: 700 13px/1.6 monospace; }

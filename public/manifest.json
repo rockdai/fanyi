@@ -4,6 +4,8 @@
   "short_name": "fanyi",
   "version": "0.1.0",
   "description": "开源、轻量的智能 AI 网页翻译与划词翻译工具。",
+  "homepage_url": "https://github.com/rockdai/fanyi",
+  "minimum_chrome_version": "114",
   "permissions": ["storage", "activeTab", "contextMenus"],
   "host_permissions": [
     "https://translate.googleapis.com/*",
