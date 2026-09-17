@@ -22,7 +22,6 @@ interface Scan {
 
 interface Run {
   failed: number;
-  failureStreak: number;
   lastFailure: string;
 }
 
@@ -46,6 +45,7 @@ const pageRequests = new Set<() => void>();
 const selectionRequests = new Set<() => void>();
 let run: Run | null = null;
 let inflight = 0;
+let failureStreak = 0;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active) return;
@@ -66,7 +66,7 @@ const visibilityObserver = new IntersectionObserver((entries) => {
   if (!visible.length) return;
   // 用户刚滚到的段落优先；连续失败的暂停也由这次滚动解除，服务没恢复就只多失败这一批
   queue.unshift(...visible);
-  if (run) run.failureStreak = 0;
+  failureStreak = 0;
   drainQueue();
 }, { rootMargin: "50% 0px" });
 
@@ -208,7 +208,7 @@ function retryTranslation(translation: HTMLElement): void {
   translation.remove();
   queue.unshift(paragraph);
   // 用户主动重试就解除连续失败带来的暂停
-  if (run) run.failureStreak = 0;
+  failureStreak = 0;
   drainQueue();
 }
 
@@ -286,14 +286,13 @@ async function requestTranslations(texts: string[], sourceLanguage: string, targ
 }
 
 function drainQueue(): void {
-  if (!active || !queue.length) return;
+  // 连续失败多半是密钥或额度问题，暂停到有一批成功、用户重试或滚动、重启为止；后台补采和 DOM 变化都不解除
+  if (!active || !queue.length || failureStreak >= MAX_CONSECUTIVE_FAILURES) return;
   if (!run) {
-    run = { failed: 0, failureStreak: 0, lastFailure: "" };
+    run = { failed: 0, lastFailure: "" };
     translating = true;
     notifyState();
   }
-  // 连续失败多半是密钥或额度问题，这一轮不再取新批次；失败段落上的重试会重新开始
-  if (run.failureStreak >= MAX_CONSECUTIVE_FAILURES) return;
   // ponytail: 并发中的批次不计入连续失败，最坏多发 2 批才停
   while (queue.length && inflight < MAX_CONCURRENT_BATCHES) void translateBatch(run);
 }
@@ -310,12 +309,12 @@ async function translateBatch(current: Run): Promise<void> {
     placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
     // 真实译文比占位符长，固定高度的原文可能此时才装不下
     placeholders.forEach((placeholder, index) => settleTranslation(batch[index].element, placeholder));
-    current.failureStreak = 0;
+    failureStreak = 0;
   } catch (error) {
     if (run !== current) return;
     current.lastFailure = error instanceof Error ? error.message : "翻译失败";
     current.failed += batch.length;
-    current.failureStreak += 1;
+    failureStreak += 1;
     placeholders.forEach((placeholder) => showFailure(placeholder, current.lastFailure));
   }
   inflight -= 1;
@@ -417,6 +416,7 @@ function removePageTranslations(): void {
   translating = false;
   run = null;
   inflight = 0;
+  failureStreak = 0;
   // 在途请求随本轮作废，断开端口让后台停止请求和重试
   pageRequests.forEach((cancel) => cancel());
   pageRequests.clear();

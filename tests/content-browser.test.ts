@@ -688,6 +688,36 @@ describe("translation settings in a real page", () => {
 });
 
 describe("text-heavy pages", () => {
+  it("keeps a failure pause through idle continuation and resumes everything from one retry", async () => {
+    const heavy = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
+    await heavy.evaluate(() => {
+      const fragment = document.createDocumentFragment();
+      for (let index = 0; index < 1100; index += 1) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = `Paragraph number ${index} of a very long article.`;
+        fragment.append(paragraph);
+      }
+      document.querySelector(".site")?.append(fragment);
+    });
+    await heavy.evaluate("window.__failAll = true; __updateSettings({ translateFullPage: true, translateTitle: false })");
+    await heavy.evaluate("__toggle()");
+    await heavy.waitForFunction(() => document.querySelectorAll(".fanyi-translation[data-error]").length >= 12 && !document.querySelector(".fanyi-translation[data-loading]"));
+    // 等空闲补采把后面的扫描块也排进队列
+    await heavy.waitForFunction("document.querySelectorAll('[data-fanyi-processed]').length >= 1100", undefined, { timeout: 15000 });
+    await heavy.waitForTimeout(500);
+    const requests = () => heavy.evaluate<number>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length");
+    expect(await requests()).toBeLessThanOrEqual(5);
+    expect(await heavy.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: 0 });
+
+    await heavy.evaluate("window.__failAll = false; document.querySelector('.fanyi-translation[data-error] a.fanyi-retry').click()");
+    // 重试成功后暂停解除，队列里全部段落翻完；只有最初失败的那几批还带着错误和重试链接
+    await heavy.waitForFunction((total) => !document.querySelector(".fanyi-translation[data-loading]") && document.querySelectorAll(".fanyi-translation").length === total, IDS.length + 1100, { timeout: 15000 });
+    const errors = await heavy.evaluate<number>("document.querySelectorAll('.fanyi-translation[data-error]').length");
+    expect(errors).toBeLessThan(20);
+    expect(await heavy.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: IDS.length + 1100 - errors });
+    await heavy.close();
+  }, 40000);
+
   it("keeps collecting past the per-scan block limit until the whole page is translated", async () => {
     const heavy = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
     await heavy.evaluate(() => {
