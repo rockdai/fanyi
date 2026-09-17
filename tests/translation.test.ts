@@ -147,18 +147,25 @@ describe("OpenAI batch translation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("drops cached translations once the API configuration changes", async () => {
-    const fetchMock = vi.fn().mockImplementation(() => reply("配置"));
+  it("keeps translations cached per API configuration, even when an old request finishes late", async () => {
+    let releaseOld = () => {};
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { releaseOld = () => resolve(reply("旧配置")); }))
+      .mockImplementation(() => reply("新配置"));
     vi.stubGlobal("fetch", fetchMock);
-    const qwen = { ...settings, apiVendor: "qwen" as const, extraBody: '{"max_tokens":20}' };
-    await expect(translateTexts(["Config change"], qwen, "en", "zh-CN")).resolves.toEqual(["配置"]);
-    await expect(translateTexts(["Config change"], qwen, "en", "zh-CN")).resolves.toEqual(["配置"]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    await expect(translateTexts(["Config change"], { ...qwen, extraBody: "{oops" }, "en", "zh-CN")).rejects.toThrow("额外请求参数");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    await expect(translateTexts(["Config change"], { ...qwen, apiVendor: "deepseek" }, "en", "zh-CN")).resolves.toEqual(["配置"]);
+    const oldConfig = { ...settings, apiModel: "model-a", apiVendor: "qwen" as const, extraBody: '{"max_tokens":20}' };
+    const newConfig = { ...settings, apiModel: "model-b", apiVendor: "deepseek" as const, extraBody: '{"max_tokens":40}' };
+
+    const pending = translateTexts(["Race"], oldConfig, "en", "zh-CN");
+    await expect(translateTexts(["Race"], newConfig, "en", "zh-CN")).resolves.toEqual(["新配置"]);
+    releaseOld();
+    await expect(pending).resolves.toEqual(["旧配置"]);
+
+    await expect(translateTexts(["Race"], newConfig, "en", "zh-CN")).resolves.toEqual(["新配置"]);
+    await expect(translateTexts(["Race"], oldConfig, "en", "zh-CN")).resolves.toEqual(["旧配置"]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(thinkingKeysOf(fetchMock.mock.calls[1][1] as RequestInit)).toEqual(["thinking"]);
+    await expect(translateTexts(["Race"], { ...newConfig, extraBody: "{oops" }, "en", "zh-CN")).rejects.toThrow("额外请求参数");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an extra body that is not a JSON object before sending anything", async () => {

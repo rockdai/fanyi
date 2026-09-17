@@ -179,15 +179,9 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
   return parseTranslations(content, texts);
 }
 
-let cachedApiConfig = "";
-
 export async function translateTexts(texts: string[], settings: Settings, sourceLanguage: string, targetLanguage: string): Promise<string[]> {
-  // 接口配置变了，旧译文不再代表当前配置的结果，连接测试也必须真的发请求
-  const apiConfig = JSON.stringify([settings.apiBaseUrl, settings.apiModel, settings.apiVendor, settings.temperature, settings.extraBody]);
-  if (apiConfig !== cachedApiConfig) {
-    translationCache.clear();
-    cachedApiConfig = apiConfig;
-  }
+  // 接口配置进缓存键：配置一改旧译文自然失效，旧配置的在途请求晚到也只能写回自己的键
+  const apiConfig = settings.provider === "openai" ? JSON.stringify([settings.apiBaseUrl, settings.apiModel, settings.apiVendor, settings.temperature, settings.extraBody]) : "";
   const normalizedTexts = texts.map((text) => text.trim().slice(0, 5000));
   const results = new Array<string>(texts.length);
   const missing: Array<{ index: number; text: string; key: string }> = [];
@@ -198,7 +192,7 @@ export async function translateTexts(texts: string[], settings: Settings, source
       results[index] = text;
       return;
     }
-    const key = `${settings.provider}:${sourceLanguage}:${targetLanguage}:${text}`;
+    const key = `${settings.provider}:${apiConfig}:${sourceLanguage}:${targetLanguage}:${text}`;
     const cached = translationCache.get(key);
     if (cached) results[index] = cached;
     else missing.push({ index, text, key });
