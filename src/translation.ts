@@ -8,19 +8,75 @@ interface OpenAIResponse {
   error?: { message?: string };
 }
 
-export function parseTranslationArray(content: string, expectedLength: number): string[] {
-  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const firstBracket = cleaned.indexOf("[");
-  const lastBracket = cleaned.lastIndexOf("]");
-  if (firstBracket < 0 || lastBracket <= firstBracket) {
-    throw new Error("AI 返回格式不正确");
-  }
+const PARAGRAPH_SEPARATOR = "%%";
+// 协议里的分隔符独占一行；原文经空白折叠后没有换行，正文内联的 %% 不会被当成边界
+const SEPARATOR_LINE = /^[ \t]*%%[ \t]*$/m;
 
-  const parsed: unknown = JSON.parse(cleaned.slice(firstBracket, lastBracket + 1));
-  if (!Array.isArray(parsed) || parsed.length !== expectedLength || !parsed.every((item) => typeof item === "string")) {
-    throw new Error("AI 返回的译文数量不一致");
-  }
-  return parsed;
+export function parseTranslations(content: string, texts: string[]): string[] {
+  // 兼容服务可能把整份回复包进代码围栏；原文本身以围栏开头时分不清包装和内容，宁可保留不删
+  const trimmed = content.trim();
+  const sourceStartsWithFence = texts[0]?.startsWith("```") ?? false;
+  const body = sourceStartsWithFence ? trimmed : trimmed.replace(/^```[^\n]*\n([\s\S]*)\n```$/, "$1");
+  // 单段模式模型直接输出，不按分隔符拆分
+  const parts = texts.length === 1 ? [body] : body.split(SEPARATOR_LINE);
+  const translations = parts.map((part) => part.trim());
+  if (translations.length !== texts.length) throw new Error("AI 返回的译文数量不一致");
+  if (translations.some((translation) => !translation)) throw new Error("AI 服务未返回译文");
+  return translations;
+}
+
+export function buildSystemPrompt(targetLanguage: string): string {
+  // 模型对 zh-CN/zh-TW 这类代码的理解不稳定，prompt 里用可读的英文语言名
+  const to = languageName(targetLanguage);
+  return `You are a professional ${to} native translator who needs to fluently translate text into ${to}.
+
+## Translation Rules
+1. Output only the translated content, without explanations or additional content (such as "Here's the translation:" or "Translation as follows:")
+2. The returned translation must maintain exactly the same number of paragraphs and format as the original text
+3. If the text contains HTML tags, consider where the tags should be placed in the translation while maintaining fluency
+4. For content that should not be translated (such as proper nouns, code, etc.), keep the original text.
+5. If input contains ${PARAGRAPH_SEPARATOR}, use ${PARAGRAPH_SEPARATOR} in your output, if input has no ${PARAGRAPH_SEPARATOR}, don't use ${PARAGRAPH_SEPARATOR} in your output
+
+## OUTPUT FORMAT:
+- **Single paragraph input** → Output translation directly (no separators, no extra text)
+- **Multi-paragraph input** → Use ${PARAGRAPH_SEPARATOR} as paragraph separator between translations
+
+## Examples
+### Multi-paragraph Input:
+Paragraph A
+
+${PARAGRAPH_SEPARATOR}
+
+Paragraph B
+
+${PARAGRAPH_SEPARATOR}
+
+Paragraph C
+
+${PARAGRAPH_SEPARATOR}
+
+Paragraph D
+
+### Multi-paragraph Output:
+Translation A
+
+${PARAGRAPH_SEPARATOR}
+
+Translation B
+
+${PARAGRAPH_SEPARATOR}
+
+Translation C
+
+${PARAGRAPH_SEPARATOR}
+
+Translation D
+
+### Single paragraph Input:
+Single paragraph content
+
+### Single paragraph Output:
+Direct translation without separators`;
 }
 
 function remember(key: string, value: string): void {
@@ -71,16 +127,14 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
-export function buildTranslationPrompt(count: number, sourceLanguage: string, targetLanguage: string): string {
-  // 模型对 zh-CN/zh-TW 这类代码的理解不稳定，prompt 里用可读的英文语言名
-  const source = sourceLanguage === "auto" ? "" : ` from ${languageName(sourceLanguage)}`;
-  return `You are a precise translation engine. Translate every numbered item${source} into ${languageName(targetLanguage)}. Preserve meaning, tone, names, inline punctuation, and formatting. Return only a valid JSON array of translated strings in the original order. The array must contain exactly ${count} strings.`;
+export function buildUserPrompt(texts: string[], sourceLanguage: string, targetLanguage: string): string {
+  const from = sourceLanguage === "auto" ? "" : ` from ${languageName(sourceLanguage)}`;
+  return `Translate${from} to ${languageName(targetLanguage)}: ${texts.join(`\n\n${PARAGRAPH_SEPARATOR}\n\n`)}`;
 }
 
 async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
   if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const numberedTexts = texts.map((text, index) => `${index + 1}. ${text}`).join("\n\n");
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -91,8 +145,8 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
       model: settings.apiModel,
       temperature: settings.temperature,
       messages: [
-        { role: "system", content: buildTranslationPrompt(texts.length, settings.sourceLanguage, settings.targetLanguage) },
-        { role: "user", content: numberedTexts },
+        { role: "system", content: buildSystemPrompt(settings.targetLanguage) },
+        { role: "user", content: buildUserPrompt(texts, settings.sourceLanguage, settings.targetLanguage) },
       ],
     }),
   });
@@ -101,7 +155,7 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
   if (!response.ok) throw new Error(payload.error?.message || `AI 服务请求失败（${response.status}）`);
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 服务未返回译文");
-  return parseTranslationArray(content, texts.length);
+  return parseTranslations(content, texts);
 }
 
 export async function translateTexts(texts: string[], settings: Settings, sourceLanguage: string, targetLanguage: string): Promise<string[]> {
@@ -110,6 +164,11 @@ export async function translateTexts(texts: string[], settings: Settings, source
   const missing: Array<{ index: number; text: string; key: string }> = [];
 
   normalizedTexts.forEach((text, index) => {
+    // 纯符号片段无需翻译；切分后恰好等于 %% 的片段若送出去会与协议分隔符混淆
+    if (!/[\p{L}\p{N}]/u.test(text)) {
+      results[index] = text;
+      return;
+    }
     const key = `${settings.provider}:${sourceLanguage}:${targetLanguage}:${text}`;
     const cached = translationCache.get(key);
     if (cached) results[index] = cached;
