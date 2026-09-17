@@ -9,7 +9,7 @@
     "dev": "node scripts/build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "package": "npm run build && cd dist && zip -qr ../fanyi-$npm_package_version.zip . -x '*.DS_Store'",
+    "package": "npm run build && rm -f fanyi-$npm_package_version.zip && cd dist && zip -qr ../fanyi-$npm_package_version.zip . -x '*.DS_Store'",
     "store-assets": "npm run build && node scripts/store-assets.mjs"
   },
   "devDependencies": {
