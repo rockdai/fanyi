@@ -24,8 +24,10 @@ npm run build
 ```bash
 npm run dev       # 监听源码并持续构建
 npm run typecheck # TypeScript 检查
-npm test          # 单元测试
+npm test          # 单元测试与真实浏览器测试
 ```
+
+端到端测试会把构建好的扩展装进 Playwright 的 Chrome for Testing，首次运行前执行 `npx playwright-core install chromium`；其余浏览器测试使用本机安装的 Google Chrome。
 
 ## 快捷键
 
