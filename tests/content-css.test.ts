@@ -15,6 +15,10 @@ describe("translation stylesheet", () => {
     }
     expect(baseRule).toMatch(/font-size:\s*calc\(1em \* var\(--fanyi-font-scale/);
   });
+
+  it("renders the retry link as underlined inherited text", () => {
+    expect(css).toMatch(/\.fanyi-translation \.fanyi-retry \{[^}]*color:\s*inherit\s*!important[^}]*text-decoration:\s*underline\s*!important/);
+  });
 });
 
 describe("brand logo", () => {

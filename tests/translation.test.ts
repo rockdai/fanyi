@@ -65,8 +65,32 @@ describe("OpenAI batch translation", () => {
   const settings = { ...DEFAULT_SETTINGS, provider: "openai" as const, apiKey: "test-key" };
   const reply = (content: string) => new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
   const userMessageOf = (init: RequestInit) => (JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> }).messages;
+  const encode = (text: string) => new TextEncoder().encode(text);
+  const delta = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+  const DONE = "data: [DONE]\n\n";
+  const finalChunk = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: "stop" }] })}\n\n`;
+  // 真实 fetch 被中止时响应体会以 AbortError 结束，模拟流也要跟着 signal 走
+  const sse = (chunks: string[], options: { keepOpen?: boolean; fail?: boolean; onCancel?: () => void } = {}) => (_url: string, init: RequestInit) =>
+    new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => {
+          try {
+            controller.error(new DOMException("aborted", "AbortError"));
+          } catch {}
+        });
+        chunks.forEach((chunk) => controller.enqueue(encode(chunk)));
+        if (options.fail) controller.error(new TypeError("socket closed"));
+        else if (!options.keepOpen) controller.close();
+      },
+      cancel: options.onCancel,
+    }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  const hang = (_url: string, init: RequestInit) => new Promise<Response>((_, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
 
-  afterEach(() => vi.unstubAllGlobals());
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it("joins paragraphs with %% and maps the separated reply back", async () => {
     const fetchMock = vi.fn().mockResolvedValue(reply("你好\n\n%%\n\n世界"));
@@ -168,6 +192,170 @@ describe("OpenAI batch translation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("asks for a streamed reply and reassembles it across chunk boundaries", async () => {
+    const second = delta("\n\n世界");
+    const fetchMock = vi.fn().mockImplementation(sse([delta("你好\n\n%%"), second.slice(0, 12), second.slice(12), DONE]));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["Streamed hello", "Streamed world"], settings, "en", "zh-CN")).resolves.toEqual(["你好", "世界"]);
+    expect(bodyOf(fetchMock.mock.calls[0][1] as RequestInit).stream).toBe(true);
+  });
+
+  it("surfaces an error object delivered inside the stream", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(sse([delta("半"), 'data: {"error":{"message":"quota exceeded"}}\n\n'])));
+    await expect(translateTexts(["Stream error"], settings, "en", "zh-CN")).rejects.toThrow("quota exceeded");
+  });
+
+  it("finishes as soon as [DONE] arrives even if the connection stays open", async () => {
+    const cancel = vi.fn();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(sse([delta("完整"), DONE], { keepOpen: true, onCancel: cancel })));
+    await expect(translateTexts(["Done but open"], settings, "en", "zh-CN")).resolves.toEqual(["完整"]);
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("accepts EOF after a finish_reason without [DONE]", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(sse([delta("完"), finalChunk("整")])));
+    await expect(translateTexts(["Finish reason"], settings, "en", "zh-CN")).resolves.toEqual(["完整"]);
+  });
+
+  it("treats EOF without a completion marker as truncated, retries and never caches the fragment", async () => {
+    const fetchMock = vi.fn().mockImplementationOnce(sse([delta("只返回了前半")])).mockImplementation(sse([delta("完整译文"), DONE]));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Truncated"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual(["完整译文"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(translateTexts(["Truncated"], settings, "en", "zh-CN")).resolves.toEqual(["完整译文"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a truncated stream once every attempt is cut short", async () => {
+    const fetchMock = vi.fn().mockImplementation(sse([delta("半")]));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Always truncated"], settings, "en", "zh-CN");
+    pending.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(pending).rejects.toThrow("AI 服务响应不完整");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a stream that stalls for 30 seconds", async () => {
+    const fetchMock = vi.fn().mockImplementationOnce(sse([delta("半")], { keepOpen: true })).mockImplementation(sse([delta("重来"), DONE]));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Stalled once"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(pending).resolves.toEqual(["重来"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a timeout once every stream stalls", async () => {
+    const fetchMock = vi.fn().mockImplementation(sse([delta("半")], { keepOpen: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Always stalled"], settings, "en", "zh-CN");
+    pending.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(93_000);
+    await expect(pending).rejects.toThrow("服务响应超时");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a stream whose connection drops", async () => {
+    const fetchMock = vi.fn().mockImplementationOnce(sse([delta("半")], { fail: true })).mockImplementation(sse([delta("重连"), DONE]));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Dropped stream"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual(["重连"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to a plain request when the service rejects streaming", async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Response(JSON.stringify({ error: { message: "stream is not supported" } }), { status: 400 }))
+      .mockImplementation(() => reply("非流式"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["No streaming"], settings, "en", "zh-CN")).resolves.toEqual(["非流式"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(bodyOf(fetchMock.mock.calls[0][1] as RequestInit).stream).toBe(true);
+    expect(bodyOf(fetchMock.mock.calls[1][1] as RequestInit).stream).toBe(false);
+  });
+
+  it("stops retrying once the caller cancels, without waiting out the backoff", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => new Response("", { status: 429, headers: { "retry-after": "43200" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    const pending = translateTexts(["Cancelled"], settings, "en", "zh-CN", controller.signal);
+    pending.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(1000);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(pending).rejects.toThrow("翻译已取消");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries when a plain JSON body hangs", async () => {
+    const hanging = (_url: string, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        controller.enqueue(encode('{"choices":[{"message":{"content":"半'));
+      },
+    }), { status: 200 });
+    const fetchMock = vi.fn().mockImplementationOnce(hanging).mockImplementation(() => reply("恢复"));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["JSON hang"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(pending).resolves.toEqual(["恢复"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries when a plain JSON body's connection drops", async () => {
+    const dropped = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encode('{"choices":'));
+        controller.error(new TypeError("socket closed"));
+      },
+    }), { status: 200 });
+    const fetchMock = vi.fn().mockImplementationOnce(dropped).mockImplementation(() => reply("重连"));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["JSON drop"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual(["重连"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a malformed plain JSON body without retrying", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => new Response("<html>oops</html>", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["JSON garbage"], settings, "en", "zh-CN")).rejects.toThrow("AI 服务返回格式异常");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts a request whose headers never arrive and retries it", async () => {
+    const fetchMock = vi.fn().mockImplementationOnce(hang).mockImplementationOnce(hang).mockImplementation(() => reply("终于"));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Hanging request"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(63_000);
+    await expect(pending).resolves.toEqual(["终于"]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports a timeout once every attempt hangs", async () => {
+    const fetchMock = vi.fn().mockImplementation(hang);
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Always hanging"], settings, "en", "zh-CN");
+    pending.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(93_000);
+    await expect(pending).rejects.toThrow("服务响应超时");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a network failure", async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockImplementation(() => reply("恢复"));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Network blip"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual(["恢复"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects an extra body that is not a JSON object before sending anything", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -177,11 +365,14 @@ describe("OpenAI batch translation", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("propagates the service error message and sends nothing else", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }));
+  it("backs off and retries a 429 before propagating the service error", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(translateTexts(["Use %% once.", "Plain paragraph."], settings, "en", "zh-CN")).rejects.toThrow("rate limited");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const pending = translateTexts(["Use %% once.", "Plain paragraph."], settings, "en", "zh-CN");
+    pending.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(pending).rejects.toThrow("rate limited");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("rejects a whitespace-only reply instead of showing an empty translation", async () => {
@@ -197,6 +388,21 @@ describe("Google batch translation", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("aborts a JSON body that never finishes and retries", async () => {
+    const hanging = (_url: string, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        controller.enqueue(new TextEncoder().encode('["你'));
+      },
+    }), { status: 200 });
+    const fetchMock = vi.fn().mockImplementationOnce(hanging).mockImplementation(() => json(["你好"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["Body hang"], DEFAULT_SETTINGS, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(pending).resolves.toEqual(["你好"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("sends the whole batch as one request and maps auto-detected results back", async () => {
