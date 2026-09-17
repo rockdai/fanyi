@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { splitText } from "../src/paragraphs";
 import { DEFAULT_SETTINGS } from "../src/settings";
 import { buildSystemPrompt, buildUserPrompt, parseTranslations, translateTexts } from "../src/translation";
 
@@ -88,6 +89,19 @@ describe("OpenAI batch translation", () => {
     expect(userMessageOf(init)[1].content).toBe("Translate from English to Simplified Chinese: Use %% to print a literal percent sign.\n\n%%\n\nSecond paragraph.\n\n%%\n\nThird paragraph.");
   });
 
+  it("keeps a split-off fragment that is exactly %% out of the request", async () => {
+    for (const maxChars of [100, DEFAULT_SETTINGS.maxCharsPerRequest]) {
+      const fragments = splitText("A".repeat(maxChars - 2) + " %%", maxChars);
+      expect(fragments).toEqual(["A".repeat(maxChars - 2), "%%"]);
+      const fetchMock = vi.fn().mockResolvedValue(reply("译文"));
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(translateTexts(fragments, settings, "en", "zh-CN")).resolves.toEqual(["译文", "%%"]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(userMessageOf(init)[1].content).toBe(`Translate from English to Simplified Chinese: ${"A".repeat(maxChars - 2)}`);
+    }
+  });
+
   it("propagates the service error message and sends nothing else", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -154,6 +168,13 @@ describe("Google batch translation", () => {
     await vi.advanceTimersByTimeAsync(3000);
     await outcome;
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns symbol-only texts untouched without any request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["%%", "…", "→"], DEFAULT_SETTINGS, "en", "zh-CN")).resolves.toEqual(["%%", "…", "→"]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects a response whose item count does not match", async () => {

@@ -164,6 +164,11 @@ export async function translateTexts(texts: string[], settings: Settings, source
   const missing: Array<{ index: number; text: string; key: string }> = [];
 
   normalizedTexts.forEach((text, index) => {
+    // 纯符号片段无需翻译；切分后恰好等于 %% 的片段若送出去会与协议分隔符混淆
+    if (!/[\p{L}\p{N}]/u.test(text)) {
+      results[index] = text;
+      return;
+    }
     const key = `${settings.provider}:${sourceLanguage}:${targetLanguage}:${text}`;
     const cached = translationCache.get(key);
     if (cached) results[index] = cached;
