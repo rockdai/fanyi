@@ -50,7 +50,7 @@ const visibilityObserver = new IntersectionObserver((entries) => {
   });
   if (!visible.length) return;
   queue.push(...visible);
-  void drainQueue(false);
+  void drainQueue();
 }, { rootMargin: "50% 0px" });
 
 function pageState(): PageStateResponse {
@@ -189,20 +189,13 @@ function applyTranslationStyle(): void {
   });
 }
 
-function showProgress(text: string): HTMLElement {
-  let toast = document.querySelector<HTMLElement>(".fanyi-progress-toast");
-  if (!toast) {
-    toast = document.createElement("div");
-    toast.className = "fanyi-progress-toast";
-    document.documentElement.append(toast);
-  }
-  toast.textContent = text;
-  return toast;
-}
-
 function showNotice(text: string): void {
-  const toast = showProgress(text);
-  window.setTimeout(() => toast.remove(), 2500);
+  document.querySelector(".fanyi-notice")?.remove();
+  const notice = document.createElement("div");
+  notice.className = "fanyi-notice";
+  notice.textContent = text;
+  document.documentElement.append(notice);
+  window.setTimeout(() => notice.remove(), 2500);
 }
 
 async function sendTranslationRequest(texts: string[], sourceLanguage: string, targetLanguage: string): Promise<string[]> {
@@ -228,15 +221,13 @@ async function requestTranslations(texts: string[], sourceLanguage: string, targ
   return pieces.map(({ length }) => translated.slice(cursor, (cursor += length)).join(" "));
 }
 
-async function drainQueue(announce: boolean): Promise<void> {
+async function drainQueue(): Promise<void> {
   if (translating || !active || !queue.length) return;
   translating = true;
   const currentGeneration = generation;
-  let done = 0;
   let failed = 0;
   let failureStreak = 0;
   let lastFailure = "";
-  const toast = announce ? showProgress(`正在翻译 0 / ${queue.length}`) : null;
   notifyState();
 
   while (queue.length && active && currentGeneration === generation) {
@@ -268,12 +259,9 @@ async function drainQueue(announce: boolean): Promise<void> {
         break;
       }
     }
-    done += batch.length;
-    if (toast) toast.textContent = `正在翻译 ${done} / ${done + queue.length}`;
   }
 
   if (currentGeneration === generation) translating = false;
-  toast?.remove();
   if (failed && currentGeneration === generation) showNotice(`${failed} 个段落翻译失败：${lastFailure}`);
   notifyState();
 }
@@ -340,7 +328,7 @@ async function startTranslation(reset: boolean): Promise<PageStateResponse> {
   if (starting && settings.translateTitle) void translateTitle();
   mutationObserver.observe(document.body, { childList: true, subtree: true });
   notifyState();
-  void drainQueue(true);
+  void drainQueue();
   return pageState();
 }
 
@@ -352,7 +340,7 @@ function removePageTranslations(): void {
   queue.length = 0;
   document.querySelectorAll(".fanyi-translation").forEach((element) => element.remove());
   document.querySelectorAll<HTMLElement>("[data-fanyi-processed]").forEach((element) => delete element.dataset.fanyiProcessed);
-  document.querySelector(".fanyi-progress-toast")?.remove();
+  document.querySelector(".fanyi-notice")?.remove();
   // 只撤销扩展自己写入的标题，网页后来更新的标题保持不动
   if (originalTitle !== null && document.title === translatedTitle) document.title = originalTitle;
   originalTitle = null;

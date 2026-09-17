@@ -448,13 +448,21 @@ describe("translation settings in a real page", () => {
     await page.evaluate("window.__delay = 0");
   }, 15000);
 
+  it("shows no progress card while paragraphs are being translated", async () => {
+    await page.evaluate("window.__holdRequests = true; __restart()");
+    await page.waitForFunction("window.__pending.length > 0");
+    expect(await page.evaluate("document.querySelector('.fanyi-notice') === null")).toBe(true);
+    await page.evaluate("window.__holdRequests = false; window.__pending.splice(0).forEach((p) => p.resolve())");
+    await settled();
+  });
+
   it("refuses to translate a page that is already in the target language", async () => {
     await page.evaluate("__toggle()");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
     await page.evaluate("__updateSettings({ sourceLanguage: 'auto' })");
     await page.evaluate("__toggle()");
-    await page.waitForFunction(() => document.querySelector(".fanyi-progress-toast"));
-    expect(await page.evaluate("document.querySelector('.fanyi-progress-toast').textContent")).toBe("页面语言与目标语言相同，无需翻译");
+    await page.waitForFunction(() => document.querySelector(".fanyi-notice"));
+    expect(await page.evaluate("document.querySelector('.fanyi-notice').textContent")).toBe("页面语言与目标语言相同，无需翻译");
     expect(await page.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
 
     await page.evaluate("__updateSettings({ detectSameLanguage: false })");
@@ -593,7 +601,7 @@ describe("translation settings in a real page", () => {
     expect(await translation("sidediv")).toMatchObject({ text: "译文 Sidebar div text." });
     expect(await page.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: IDS.length - 4 });
     expect(await page.evaluate("document.querySelectorAll('[data-fanyi-processed]').length")).toBe(IDS.length);
-    expect(await page.evaluate("document.querySelector('.fanyi-progress-toast')?.textContent")).toBe("4 个段落翻译失败：request failed on purpose");
+    expect(await page.evaluate("document.querySelector('.fanyi-notice')?.textContent")).toBe("4 个段落翻译失败：request failed on purpose");
     await page.evaluate("window.__failText = null; __toggle()");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
   });
