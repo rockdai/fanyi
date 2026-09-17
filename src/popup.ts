@@ -62,7 +62,7 @@ function renderPageState(): void {
     pageStatus.textContent = "翻译进行中";
     pageTitle.textContent = "正在读懂这篇内容";
   } else if (pageState.active) {
-    pageStatus.textContent = "沉浸翻译已开启";
+    pageStatus.textContent = "网页翻译已开启";
     pageTitle.textContent = pageState.translatedCount ? `已翻译 ${pageState.translatedCount} 个段落` : "等待页面内容";
   } else {
     pageStatus.textContent = "准备就绪";

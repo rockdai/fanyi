@@ -15,7 +15,7 @@
 
 ## Project Context
 
-- fanyi 是一个开源的 Manifest V3 浏览器翻译插件，支持沉浸式网页翻译与划词翻译。
+- fanyi 是一个开源的 Manifest V3 浏览器翻译插件，支持智能 AI 网页翻译与划词翻译。
 - 项目使用 TypeScript 和 esbuild，不依赖前端 UI 框架。
 - 源码位于 `src/`，静态资源位于 `public/`，测试位于 `tests/`，构建脚本位于 `scripts/`。
 - `dist/` 是构建产物，不应直接编辑或提交。
