@@ -1,4 +1,4 @@
-import { languageName, type Settings } from "./settings";
+import { languageName, type ApiVendor, type Settings } from "./settings";
 
 const translationCache = new Map<string, string>();
 const MAX_CACHE_SIZE = 500;
@@ -127,6 +127,28 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
+// 各家关闭思考的参数互不兼容；Kimi 非思考模式温度固定 0.6，其他值会报错
+const THINKING_OFF: Record<ApiVendor, Record<string, unknown>> = {
+  none: {},
+  openai: { reasoning_effort: "none" },
+  gemini: { reasoning_effort: "none" },
+  deepseek: { thinking: { type: "disabled" } },
+  kimi: { thinking: { type: "disabled" }, temperature: 0.6 },
+  zhipu: { thinking: { type: "disabled" } },
+  qwen: { enable_thinking: false },
+  openrouter: { reasoning: { enabled: false } },
+  vllm: { chat_template_kwargs: { enable_thinking: false } },
+};
+
+function parseExtraBody(extraBody: string): Record<string, unknown> {
+  if (!extraBody.trim()) return {};
+  try {
+    const parsed: unknown = JSON.parse(extraBody);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  } catch {}
+  throw new Error("额外请求参数必须是合法的 JSON 对象");
+}
+
 export function buildUserPrompt(texts: string[], sourceLanguage: string, targetLanguage: string): string {
   const from = sourceLanguage === "auto" ? "" : ` from ${languageName(sourceLanguage)}`;
   return `Translate${from} to ${languageName(targetLanguage)}: ${texts.join(`\n\n${PARAGRAPH_SEPARATOR}\n\n`)}`;
@@ -137,13 +159,12 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey}`,
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
     body: JSON.stringify({
       model: settings.apiModel,
       temperature: settings.temperature,
+      ...THINKING_OFF[settings.apiVendor],
+      ...parseExtraBody(settings.extraBody),
       messages: [
         { role: "system", content: buildSystemPrompt(settings.targetLanguage) },
         { role: "user", content: buildUserPrompt(texts, settings.sourceLanguage, settings.targetLanguage) },
@@ -159,6 +180,8 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
 }
 
 export async function translateTexts(texts: string[], settings: Settings, sourceLanguage: string, targetLanguage: string): Promise<string[]> {
+  // 接口配置进缓存键：配置一改旧译文自然失效，旧配置的在途请求晚到也只能写回自己的键
+  const apiConfig = settings.provider === "openai" ? JSON.stringify([settings.apiBaseUrl, settings.apiModel, settings.apiVendor, settings.temperature, settings.extraBody]) : "";
   const normalizedTexts = texts.map((text) => text.trim().slice(0, 5000));
   const results = new Array<string>(texts.length);
   const missing: Array<{ index: number; text: string; key: string }> = [];
@@ -169,7 +192,7 @@ export async function translateTexts(texts: string[], settings: Settings, source
       results[index] = text;
       return;
     }
-    const key = `${settings.provider}:${sourceLanguage}:${targetLanguage}:${text}`;
+    const key = `${settings.provider}:${apiConfig}:${sourceLanguage}:${targetLanguage}:${text}`;
     const cached = translationCache.get(key);
     if (cached) results[index] = cached;
     else missing.push({ index, text, key });

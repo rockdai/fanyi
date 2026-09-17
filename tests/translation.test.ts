@@ -102,6 +102,81 @@ describe("OpenAI batch translation", () => {
     }
   });
 
+  const bodyOf = (init: RequestInit) => JSON.parse(String(init.body)) as Record<string, unknown>;
+  const thinkingKeys = ["thinking", "enable_thinking", "reasoning_effort", "reasoning", "chat_template_kwargs"];
+  const thinkingKeysOf = (init: RequestInit) => Object.keys(bodyOf(init)).filter((key) => thinkingKeys.includes(key));
+
+  it("sends only the chosen vendor's thinking-off parameter", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply("通义"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["Qwen only"], { ...settings, apiVendor: "qwen" }, "en", "zh-CN")).resolves.toEqual(["通义"]);
+    const body = bodyOf(fetchMock.mock.calls[0][1] as RequestInit);
+    expect(body).toMatchObject({ enable_thinking: false, model: DEFAULT_SETTINGS.apiModel, temperature: DEFAULT_SETTINGS.temperature });
+    expect(thinkingKeysOf(fetchMock.mock.calls[0][1] as RequestInit)).toEqual(["enable_thinking"]);
+  });
+
+  it("sends no thinking parameter by default, when no vendor is chosen", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply("默认"));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(settings.apiVendor).toBe("none");
+    await expect(translateTexts(["Vendor none"], settings, "en", "zh-CN")).resolves.toEqual(["默认"]);
+    expect(thinkingKeysOf(fetchMock.mock.calls[0][1] as RequestInit)).toEqual([]);
+  });
+
+  it("pins the temperature Kimi requires in non-thinking mode", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply("月之暗面"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["Kimi temperature"], { ...settings, apiVendor: "kimi" }, "en", "zh-CN")).resolves.toEqual(["月之暗面"]);
+    expect(bodyOf(fetchMock.mock.calls[0][1] as RequestInit)).toMatchObject({ thinking: { type: "disabled" }, temperature: 0.6 });
+  });
+
+  it("lets the custom extra body override the vendor preset but never the messages", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply("自定义"));
+    vi.stubGlobal("fetch", fetchMock);
+    const extraBody = '{"reasoning_effort":"low","max_tokens":4096,"messages":[]}';
+    await expect(translateTexts(["Custom wins"], { ...settings, apiVendor: "openai", extraBody }, "en", "zh-CN")).resolves.toEqual(["自定义"]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(bodyOf(init)).toMatchObject({ reasoning_effort: "low", max_tokens: 4096 });
+    expect(userMessageOf(init)[1].content).toBe("Translate from English to Simplified Chinese: Custom wins");
+  });
+
+  it("surfaces a 400 from the service without retrying", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "Unsupported parameter: 'reasoning_effort'" } }), { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["Preset rejected"], { ...settings, apiVendor: "openai" }, "en", "zh-CN")).rejects.toThrow("Unsupported parameter");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps translations cached per API configuration, even when an old request finishes late", async () => {
+    let releaseOld = () => {};
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { releaseOld = () => resolve(reply("旧配置")); }))
+      .mockImplementation(() => reply("新配置"));
+    vi.stubGlobal("fetch", fetchMock);
+    const oldConfig = { ...settings, apiModel: "model-a", apiVendor: "qwen" as const, extraBody: '{"max_tokens":20}' };
+    const newConfig = { ...settings, apiModel: "model-b", apiVendor: "deepseek" as const, extraBody: '{"max_tokens":40}' };
+
+    const pending = translateTexts(["Race"], oldConfig, "en", "zh-CN");
+    await expect(translateTexts(["Race"], newConfig, "en", "zh-CN")).resolves.toEqual(["新配置"]);
+    releaseOld();
+    await expect(pending).resolves.toEqual(["旧配置"]);
+
+    await expect(translateTexts(["Race"], newConfig, "en", "zh-CN")).resolves.toEqual(["新配置"]);
+    await expect(translateTexts(["Race"], oldConfig, "en", "zh-CN")).resolves.toEqual(["旧配置"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(translateTexts(["Race"], { ...newConfig, extraBody: "{oops" }, "en", "zh-CN")).rejects.toThrow("额外请求参数");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an extra body that is not a JSON object before sending anything", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const extraBody of ["{oops", "[1]", '"text"', "null"]) {
+      await expect(translateTexts(["Broken extra body"], { ...settings, extraBody }, "en", "zh-CN")).rejects.toThrow("额外请求参数");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("propagates the service error message and sends nothing else", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }));
     vi.stubGlobal("fetch", fetchMock);

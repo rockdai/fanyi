@@ -1,7 +1,7 @@
 import type { RuntimeMessage, TranslationResponse } from "./messages";
 import { DEFAULT_SETTINGS, getSettings, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type Settings } from "./settings";
 
-type SettingInput = HTMLInputElement | HTMLSelectElement;
+type SettingInput = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 const sectionMeta: Record<string, { title: string; description: string }> = {
   general: { title: "通用设置", description: "设置默认语言与翻译行为。" },
