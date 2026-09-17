@@ -1,4 +1,4 @@
-import { languageName, type Settings } from "./settings";
+import { languageName, type ApiVendor, type Settings } from "./settings";
 
 const translationCache = new Map<string, string>();
 const MAX_CACHE_SIZE = 500;
@@ -127,6 +127,25 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
+// 各家关闭思考的参数互不兼容，Gemini 的 OpenAI 兼容层和 OpenAI 同名
+const THINKING_OFF: Record<Exclude<ApiVendor, "auto" | "none">, Record<string, unknown>> = {
+  openai: { reasoning_effort: "none" },
+  gemini: { reasoning_effort: "none" },
+  deepseek: { thinking: { type: "disabled" } },
+  kimi: { thinking: { type: "disabled" } },
+  zhipu: { thinking: { type: "disabled" } },
+  qwen: { enable_thinking: false },
+  openrouter: { reasoning: { enabled: false } },
+  vllm: { chat_template_kwargs: { enable_thinking: false } },
+};
+const ALL_THINKING_OFF = Object.values(THINKING_OFF).reduce((all, params) => ({ ...all, ...params }), {});
+const rejectedPresets = new Set<string>();
+
+function thinkingPreset(vendor: ApiVendor): Record<string, unknown> {
+  if (vendor === "none") return {};
+  return vendor === "auto" ? ALL_THINKING_OFF : THINKING_OFF[vendor];
+}
+
 function parseExtraBody(extraBody: string): Record<string, unknown> {
   if (!extraBody.trim()) return {};
   try {
@@ -144,23 +163,26 @@ export function buildUserPrompt(texts: string[], sourceLanguage: string, targetL
 async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
   if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const response = await fetch(endpoint, {
+  const custom = parseExtraBody(settings.extraBody);
+  const messages = [
+    { role: "system", content: buildSystemPrompt(settings.targetLanguage) },
+    { role: "user", content: buildUserPrompt(texts, settings.sourceLanguage, settings.targetLanguage) },
+  ];
+  // 用户自填的参数盖过预设；model 和 temperature 有专属输入框，不被覆盖
+  const request = (preset: Record<string, unknown>) => fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey}`,
-    },
-    body: JSON.stringify({
-      // 各家关闭思考的参数不同（thinking / enable_thinking / reasoning_effort…），由用户按服务商自填；专属输入框的字段不被覆盖
-      ...parseExtraBody(settings.extraBody),
-      model: settings.apiModel,
-      temperature: settings.temperature,
-      messages: [
-        { role: "system", content: buildSystemPrompt(settings.targetLanguage) },
-        { role: "user", content: buildUserPrompt(texts, settings.sourceLanguage, settings.targetLanguage) },
-      ],
-    }),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+    body: JSON.stringify({ ...preset, ...custom, model: settings.apiModel, temperature: settings.temperature, messages }),
   });
+
+  const presetKey = `${endpoint} ${settings.apiModel} ${settings.apiVendor}`;
+  const preset = rejectedPresets.has(presetKey) ? {} : thinkingPreset(settings.apiVendor);
+  let response = await request(preset);
+  // 不认识这些参数的模型会 400（如 gpt-4o 收到 reasoning_effort），去掉预设重试一次并记住；用户自填的参数不动，错误照常暴露
+  if (response.status === 400 && Object.keys(preset).length) {
+    response = await request({});
+    if (response.status !== 400) rejectedPresets.add(presetKey);
+  }
 
   const payload = (await response.json().catch(() => ({}))) as OpenAIResponse;
   if (!response.ok) throw new Error(payload.error?.message || `AI 服务请求失败（${response.status}）`);
