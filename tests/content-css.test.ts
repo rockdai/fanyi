@@ -36,8 +36,8 @@ describe("brand logo", () => {
   });
 
   it("uses the approved mark in injected page controls", () => {
-    expect(css).toMatch(/\.fanyi-progress-toast::before[^}]*background:\s*#b7e8ce/is);
-    expect(css).toMatch(/\.fanyi-progress-toast::after[^}]*top:\s*calc\(50% - 1px\)[^}]*color:\s*#153b31[^}]*font-family:\s*"Songti SC", SimSun, serif[^}]*font-weight:\s*900[^}]*font-size:\s*14\.666667px/is);
+    expect(css).toMatch(/\.fanyi-notice::before[^}]*background:\s*#b7e8ce/is);
+    expect(css).toMatch(/\.fanyi-notice::after[^}]*top:\s*calc\(50% - 1px\)[^}]*color:\s*#153b31[^}]*font-family:\s*"Songti SC", SimSun, serif[^}]*font-weight:\s*900[^}]*font-size:\s*14\.666667px/is);
     expect(content).toMatch(/button \{[^}]*color: #153b31; background: #b7e8ce;[^}]*font: 900 21\.333333px\/1 "Songti SC",SimSun,serif/is);
     expect(content).toMatch(/span \{ transform: translateY\(-1px\); \}/);
   });
