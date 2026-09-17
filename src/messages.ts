@@ -24,7 +24,7 @@ export interface ShowSelectionMessage {
 
 export interface PageStateChangedMessage {
   type: "PAGE_STATE_CHANGED";
-  active: boolean;
+  state: PageStateResponse;
 }
 
 export type RuntimeMessage = TranslateTextsMessage | TestProviderMessage | ContentCommandMessage | ShowSelectionMessage | PageStateChangedMessage;

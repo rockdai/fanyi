@@ -278,26 +278,28 @@ describe("the built extension in Chrome", () => {
   }, 30000);
 
   it("drives page translation from the popup and lets it switch selection translation off and on", async () => {
-    const first = await openPopup();
-    expect(await first.textContent("#page-status")).toBe("准备就绪");
-    expect(await first.isEnabled("#translate-page")).toBe(true);
-    await first.click("#translate-page");
-    await settled(6);
-    expect(await first.getAttribute("#translate-page", "aria-pressed")).toBe("true");
-    expect(await badgeText()).toBe("ON");
-    await first.close();
-
-    // 真实弹窗一失焦就关闭，再次打开才会看到翻译完成后的状态
-    const reopened = await openPopup();
-    expect(await reopened.textContent("#page-status")).toBe("网页翻译已开启");
-    expect(await reopened.textContent("#page-title")).toBe("已翻译 6 个段落");
-    await reopened.click("#translate-page");
-    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
-    expect(await reopened.textContent("#page-status")).toBe("准备就绪");
-    expect(await badgeText()).toBe("");
-    await reopened.close();
-
     const popup = await openPopup();
+    expect(await popup.textContent("#page-status")).toBe("准备就绪");
+    expect(await popup.isEnabled("#translate-page")).toBe(true);
+    await popup.click("#translate-page");
+    await settled(6);
+    // 弹窗保持打开也能看到翻译完成，电源按钮重新可用
+    await expect.poll(() => popup.textContent("#page-status")).toBe("网页翻译已开启");
+    expect(await popup.textContent("#page-title")).toBe("已翻译 6 个段落");
+    expect(await popup.getAttribute("#translate-page", "aria-pressed")).toBe("true");
+    expect(await popup.isEnabled("#translate-page")).toBe(true);
+    expect(await badgeText()).toBe("ON");
+    await popup.click("#translate-page");
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    expect(await popup.textContent("#page-status")).toBe("准备就绪");
+    expect(await badgeText()).toBe("");
+
+    // 从快捷键入口开关时弹窗同样跟着变
+    await askActiveTab("TOGGLE_PAGE");
+    await expect.poll(() => popup.textContent("#page-title")).toBe("已翻译 6 个段落");
+    await askActiveTab("TOGGLE_PAGE");
+    await expect.poll(() => popup.textContent("#page-status")).toBe("准备就绪");
+
     await popup.click("label.selection-row");
     expect(await popup.isChecked("#selection-enabled")).toBe(false);
     await selectByMouse("masthead");
