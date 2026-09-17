@@ -21,7 +21,6 @@ nav button.active > span { color: #25634f; }
 .sidebar-footer a { color: #a9c2b8; text-decoration: none; }
 .settings-main { grid-column: 2; width: min(880px, calc(100vw - 238px)); padding: 52px clamp(42px, 7vw, 92px) 70px; }
 .page-header { min-height: 95px; display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 25px; }
-.eyebrow { color: #4d806e; font-size: 12px; font-weight: 800; letter-spacing: .16em; }
 .page-header h1 { margin: 8px 0 7px; color: #163a2f; font-size: 28px; letter-spacing: -.045em; }
 .page-header p { margin: 0; color: #899991; font-size: 14px; }
 .save-state { margin-top: 24px; display: flex; align-items: center; gap: 7px; color: #82968e; font-size: 12px; opacity: 0; transition: .2s; }
