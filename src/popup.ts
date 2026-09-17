@@ -90,6 +90,13 @@ translateButton.addEventListener("click", async () => {
   renderPageState();
 });
 
+// 翻译完成或从快捷键、右键菜单开关时内容脚本都会广播状态，弹窗据此刷新而不必重新打开
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
+  if (message.type !== "PAGE_STATE_CHANGED" || !activeTab || sender.tab?.id !== activeTab.id) return;
+  pageState = message.state;
+  renderPageState();
+});
+
 selectionToggle.addEventListener("change", () => void updateSetting({ selectionEnabled: selectionToggle.checked }));
 sourceSelect.addEventListener("change", () => void updateSetting({ sourceLanguage: sourceSelect.value }, true));
 targetSelect.addEventListener("change", () => void updateSetting({ targetLanguage: targetSelect.value }, true));

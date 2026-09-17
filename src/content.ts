@@ -80,7 +80,7 @@ function pageState(): PageStateResponse {
 }
 
 function notifyState(): void {
-  void chrome.runtime.sendMessage({ type: "PAGE_STATE_CHANGED", active } satisfies RuntimeMessage).catch(() => undefined);
+  void chrome.runtime.sendMessage({ type: "PAGE_STATE_CHANGED", state: pageState() } satisfies RuntimeMessage).catch(() => undefined);
 }
 
 function extractText(element: HTMLElement): string {

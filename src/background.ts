@@ -65,7 +65,7 @@ async function translate(message: TranslateTextsMessage | TestProviderMessage, s
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message.type === "PAGE_STATE_CHANGED") {
     if (sender.tab?.id) {
-      void chrome.action.setBadgeText({ tabId: sender.tab.id, text: message.active ? "ON" : "" });
+      void chrome.action.setBadgeText({ tabId: sender.tab.id, text: message.state.active ? "ON" : "" });
       void chrome.action.setBadgeBackgroundColor({ tabId: sender.tab.id, color: "#2f775e" });
     }
     return false;
