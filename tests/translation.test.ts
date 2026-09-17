@@ -1,41 +1,47 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/settings";
-import { buildTranslationPrompt, parseTranslationArray, translateTexts } from "../src/translation";
+import { buildTranslationPrompt, parseTranslations, translateTexts } from "../src/translation";
 
 describe("AI translation parser", () => {
-  it("accepts a fenced JSON array", () => {
-    expect(parseTranslationArray('```json\n["你好", "世界"]\n```', 2)).toEqual(["你好", "世界"]);
+  it("splits multi-paragraph output on the %% separator", () => {
+    expect(parseTranslations("你好\n\n%%\n\n世界\n", 2)).toEqual(["你好", "世界"]);
+  });
+
+  it("returns single-paragraph output as is", () => {
+    expect(parseTranslations("  你好  ", 1)).toEqual(["你好"]);
   });
 
   it("rejects a result with missing items", () => {
-    expect(() => parseTranslationArray('["你好"]', 2)).toThrow("译文数量");
+    expect(() => parseTranslations("你好", 2)).toThrow("译文数量");
   });
 });
 
 describe("AI translation prompt", () => {
   it("names the target language instead of passing its code", () => {
-    const prompt = buildTranslationPrompt(3, "auto", "zh-TW");
-    expect(prompt).toContain("Translate every numbered item into Traditional Chinese.");
+    const prompt = buildTranslationPrompt("zh-TW");
+    expect(prompt).toContain("You are a professional Traditional Chinese native translator");
     expect(prompt).not.toContain("zh-TW");
-    expect(prompt).toContain("exactly 3 strings");
   });
 
-  it("mentions the source language only when it is not auto and falls back to unknown codes", () => {
-    expect(buildTranslationPrompt(1, "de", "en")).toContain("Translate every numbered item from German into English.");
-    expect(buildTranslationPrompt(1, "auto", "ja")).not.toContain(" from ");
-    expect(buildTranslationPrompt(1, "pt-BR", "zh-CN")).toContain("from pt-BR into Simplified Chinese");
+  it("falls back to the raw code for unknown languages", () => {
+    expect(buildTranslationPrompt("pt-BR")).toContain("translate text into pt-BR.");
   });
+});
 
-  it("sends the readable prompt to the OpenAI-compatible endpoint", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: '["Hallo"]' } }] }), { status: 200 }));
+describe("OpenAI batch translation", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("joins paragraphs with %% and maps the separated reply back", async () => {
+    const reply = { choices: [{ message: { content: "你好\n\n%%\n\n世界" } }] };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(reply), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const settings = { ...DEFAULT_SETTINGS, provider: "openai" as const, apiKey: "dummy" };
-    await expect(translateTexts(["Hello"], settings, "en", "de")).resolves.toEqual(["Hallo"]);
+    const settings = { ...DEFAULT_SETTINGS, provider: "openai" as const, apiKey: "test-key" };
+    await expect(translateTexts(["Hello", "World"], settings, "en", "zh-CN")).resolves.toEqual(["你好", "世界"]);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
-    expect(body.messages[0]).toEqual({ role: "system", content: buildTranslationPrompt(1, "en", "de") });
-    expect(body.messages[0].content).toContain("from English into German");
-    vi.unstubAllGlobals();
+    expect(body.messages[0]).toEqual({ role: "system", content: buildTranslationPrompt("zh-CN") });
+    expect(body.messages[0].content).toContain("professional Simplified Chinese native translator");
+    expect(body.messages[1]).toEqual({ role: "user", content: "Hello\n\n%%\n\nWorld" });
   });
 });
 

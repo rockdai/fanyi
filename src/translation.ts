@@ -8,19 +8,67 @@ interface OpenAIResponse {
   error?: { message?: string };
 }
 
-export function parseTranslationArray(content: string, expectedLength: number): string[] {
-  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const firstBracket = cleaned.indexOf("[");
-  const lastBracket = cleaned.lastIndexOf("]");
-  if (firstBracket < 0 || lastBracket <= firstBracket) {
-    throw new Error("AI 返回格式不正确");
-  }
+const PARAGRAPH_SEPARATOR = "%%";
 
-  const parsed: unknown = JSON.parse(cleaned.slice(firstBracket, lastBracket + 1));
-  if (!Array.isArray(parsed) || parsed.length !== expectedLength || !parsed.every((item) => typeof item === "string")) {
-    throw new Error("AI 返回的译文数量不一致");
-  }
-  return parsed;
+export function parseTranslations(content: string, expectedLength: number): string[] {
+  // ponytail: 原文本身含 %% 会错位，与沉浸式翻译同样的取舍；真遇到再换转义方案
+  const parts = content.trim().split(PARAGRAPH_SEPARATOR).map((part) => part.trim());
+  if (parts.length !== expectedLength) throw new Error("AI 返回的译文数量不一致");
+  return parts;
+}
+
+export function buildTranslationPrompt(targetLanguage: string): string {
+  // 模型对 zh-CN/zh-TW 这类代码的理解不稳定，prompt 里用可读的英文语言名
+  const to = languageName(targetLanguage);
+  return `You are a professional ${to} native translator who needs to fluently translate text into ${to}.
+
+## Translation Rules
+1. Output only the translated content, without explanations or additional content (such as "Here's the translation:" or "Translation as follows:")
+2. The returned translation must maintain exactly the same number of paragraphs and format as the original text
+3. If the text contains HTML tags, consider where the tags should be placed in the translation while maintaining fluency
+4. For content that should not be translated (such as proper nouns, code, etc.), keep the original text.
+5. If input contains ${PARAGRAPH_SEPARATOR}, use ${PARAGRAPH_SEPARATOR} in your output, if input has no ${PARAGRAPH_SEPARATOR}, don't use ${PARAGRAPH_SEPARATOR} in your output
+
+## OUTPUT FORMAT:
+- **Single paragraph input** → Output translation directly (no separators, no extra text)
+- **Multi-paragraph input** → Use ${PARAGRAPH_SEPARATOR} as paragraph separator between translations
+
+## Examples
+### Multi-paragraph Input:
+Paragraph A
+
+${PARAGRAPH_SEPARATOR}
+
+Paragraph B
+
+${PARAGRAPH_SEPARATOR}
+
+Paragraph C
+
+${PARAGRAPH_SEPARATOR}
+
+Paragraph D
+
+### Multi-paragraph Output:
+Translation A
+
+${PARAGRAPH_SEPARATOR}
+
+Translation B
+
+${PARAGRAPH_SEPARATOR}
+
+Translation C
+
+${PARAGRAPH_SEPARATOR}
+
+Translation D
+
+### Single paragraph Input:
+Single paragraph content
+
+### Single paragraph Output:
+Direct translation without separators`;
 }
 
 function remember(key: string, value: string): void {
@@ -71,16 +119,10 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
-export function buildTranslationPrompt(count: number, sourceLanguage: string, targetLanguage: string): string {
-  // 模型对 zh-CN/zh-TW 这类代码的理解不稳定，prompt 里用可读的英文语言名
-  const source = sourceLanguage === "auto" ? "" : ` from ${languageName(sourceLanguage)}`;
-  return `You are a precise translation engine. Translate every numbered item${source} into ${languageName(targetLanguage)}. Preserve meaning, tone, names, inline punctuation, and formatting. Return only a valid JSON array of translated strings in the original order. The array must contain exactly ${count} strings.`;
-}
-
 async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
   if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const numberedTexts = texts.map((text, index) => `${index + 1}. ${text}`).join("\n\n");
+  const userContent = texts.join(`\n\n${PARAGRAPH_SEPARATOR}\n\n`);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -91,8 +133,8 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
       model: settings.apiModel,
       temperature: settings.temperature,
       messages: [
-        { role: "system", content: buildTranslationPrompt(texts.length, settings.sourceLanguage, settings.targetLanguage) },
-        { role: "user", content: numberedTexts },
+        { role: "system", content: buildTranslationPrompt(settings.targetLanguage) },
+        { role: "user", content: userContent },
       ],
     }),
   });
@@ -101,7 +143,7 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
   if (!response.ok) throw new Error(payload.error?.message || `AI 服务请求失败（${response.status}）`);
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 服务未返回译文");
-  return parseTranslationArray(content, texts.length);
+  return parseTranslations(content, texts.length);
 }
 
 export async function translateTexts(texts: string[], settings: Settings, sourceLanguage: string, targetLanguage: string): Promise<string[]> {
