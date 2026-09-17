@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/settings";
-import { parseTranslationArray, translateTexts } from "../src/translation";
+import { buildTranslationPrompt, parseTranslationArray, translateTexts } from "../src/translation";
 
 describe("AI translation parser", () => {
   it("accepts a fenced JSON array", () => {
@@ -9,6 +9,33 @@ describe("AI translation parser", () => {
 
   it("rejects a result with missing items", () => {
     expect(() => parseTranslationArray('["你好"]', 2)).toThrow("译文数量");
+  });
+});
+
+describe("AI translation prompt", () => {
+  it("names the target language instead of passing its code", () => {
+    const prompt = buildTranslationPrompt(3, "auto", "zh-TW");
+    expect(prompt).toContain("Translate every numbered item into Traditional Chinese.");
+    expect(prompt).not.toContain("zh-TW");
+    expect(prompt).toContain("exactly 3 strings");
+  });
+
+  it("mentions the source language only when it is not auto and falls back to unknown codes", () => {
+    expect(buildTranslationPrompt(1, "de", "en")).toContain("Translate every numbered item from German into English.");
+    expect(buildTranslationPrompt(1, "auto", "ja")).not.toContain(" from ");
+    expect(buildTranslationPrompt(1, "pt-BR", "zh-CN")).toContain("from pt-BR into Simplified Chinese");
+  });
+
+  it("sends the readable prompt to the OpenAI-compatible endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: '["Hallo"]' } }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const settings = { ...DEFAULT_SETTINGS, provider: "openai" as const, apiKey: "dummy" };
+    await expect(translateTexts(["Hello"], settings, "en", "de")).resolves.toEqual(["Hallo"]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
+    expect(body.messages[0]).toEqual({ role: "system", content: buildTranslationPrompt(1, "en", "de") });
+    expect(body.messages[0].content).toContain("from English into German");
+    vi.unstubAllGlobals();
   });
 });
 

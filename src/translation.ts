@@ -1,4 +1,4 @@
-import type { Settings } from "./settings";
+import { languageName, type Settings } from "./settings";
 
 const translationCache = new Map<string, string>();
 const MAX_CACHE_SIZE = 500;
@@ -71,10 +71,15 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
+export function buildTranslationPrompt(count: number, sourceLanguage: string, targetLanguage: string): string {
+  // 模型对 zh-CN/zh-TW 这类代码的理解不稳定，prompt 里用可读的英文语言名
+  const source = sourceLanguage === "auto" ? "" : ` from ${languageName(sourceLanguage)}`;
+  return `You are a precise translation engine. Translate every numbered item${source} into ${languageName(targetLanguage)}. Preserve meaning, tone, names, inline punctuation, and formatting. Return only a valid JSON array of translated strings in the original order. The array must contain exactly ${count} strings.`;
+}
+
 async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
   if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const targetLabel = settings.targetLanguage;
   const numberedTexts = texts.map((text, index) => `${index + 1}. ${text}`).join("\n\n");
   const response = await fetch(endpoint, {
     method: "POST",
@@ -86,10 +91,7 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
       model: settings.apiModel,
       temperature: settings.temperature,
       messages: [
-        {
-          role: "system",
-          content: `You are a precise translation engine. Translate every numbered item into ${targetLabel}. Preserve meaning, tone, names, inline punctuation, and formatting. Return only a valid JSON array of translated strings in the original order. The array must contain exactly ${texts.length} strings.`,
-        },
+        { role: "system", content: buildTranslationPrompt(texts.length, settings.sourceLanguage, settings.targetLanguage) },
         { role: "user", content: numberedTexts },
       ],
     }),

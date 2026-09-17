@@ -36,23 +36,28 @@ export interface Settings {
 export interface LanguageOption {
   code: string;
   label: string;
+  english: string;
 }
 
 export const SOURCE_LANGUAGES: LanguageOption[] = [
-  { code: "auto", label: "自动识别" },
-  { code: "en", label: "英语" },
-  { code: "zh-CN", label: "简体中文" },
-  { code: "zh-TW", label: "繁体中文" },
-  { code: "ja", label: "日语" },
-  { code: "ko", label: "韩语" },
-  { code: "fr", label: "法语" },
-  { code: "de", label: "德语" },
-  { code: "es", label: "西班牙语" },
-  { code: "ru", label: "俄语" },
-  { code: "ar", label: "阿拉伯语" },
+  { code: "auto", label: "自动识别", english: "Auto" },
+  { code: "en", label: "英语", english: "English" },
+  { code: "zh-CN", label: "简体中文", english: "Simplified Chinese" },
+  { code: "zh-TW", label: "繁体中文", english: "Traditional Chinese" },
+  { code: "ja", label: "日语", english: "Japanese" },
+  { code: "ko", label: "韩语", english: "Korean" },
+  { code: "fr", label: "法语", english: "French" },
+  { code: "de", label: "德语", english: "German" },
+  { code: "es", label: "西班牙语", english: "Spanish" },
+  { code: "ru", label: "俄语", english: "Russian" },
+  { code: "ar", label: "阿拉伯语", english: "Arabic" },
 ];
 
 export const TARGET_LANGUAGES = SOURCE_LANGUAGES.filter(({ code }) => code !== "auto");
+
+export function languageName(code: string): string {
+  return SOURCE_LANGUAGES.find((language) => language.code === code)?.english ?? code;
+}
 
 export const DEFAULT_SETTINGS: Settings = {
   selectionEnabled: true,
