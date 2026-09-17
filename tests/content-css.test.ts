@@ -19,8 +19,8 @@ describe("translation stylesheet", () => {
 
 describe("brand logo", () => {
   it("uses the approved colors, centered glyph, and two-thirds type scale", () => {
-    expect(logo).toContain('fill="#153B31"');
-    expect(logo).toContain('fill="#B7E8CE"');
+    expect(logo).toMatch(/<rect [^>]*fill="#B7E8CE"/);
+    expect(logo).toMatch(/<text [^>]*fill="#153B31"/);
     expect(logo).toContain('font-family="Songti SC, SimSun, serif"');
     expect(logo).toContain('font-size="85.333333"');
     expect(logo).toContain('font-weight="900"');
@@ -36,9 +36,9 @@ describe("brand logo", () => {
   });
 
   it("uses the approved mark in injected page controls", () => {
-    expect(css).toMatch(/\.fanyi-progress-toast::before[^}]*background:\s*#153b31/is);
-    expect(css).toMatch(/\.fanyi-progress-toast::after[^}]*top:\s*calc\(50% - 1px\)[^}]*color:\s*#b7e8ce[^}]*font-family:\s*"Songti SC", SimSun, serif[^}]*font-weight:\s*900[^}]*font-size:\s*14\.666667px/is);
-    expect(content).toMatch(/button \{[^}]*color: #b7e8ce; background: #153b31;[^}]*font: 900 21\.333333px\/1 "Songti SC",SimSun,serif/is);
+    expect(css).toMatch(/\.fanyi-progress-toast::before[^}]*background:\s*#b7e8ce/is);
+    expect(css).toMatch(/\.fanyi-progress-toast::after[^}]*top:\s*calc\(50% - 1px\)[^}]*color:\s*#153b31[^}]*font-family:\s*"Songti SC", SimSun, serif[^}]*font-weight:\s*900[^}]*font-size:\s*14\.666667px/is);
+    expect(content).toMatch(/button \{[^}]*color: #153b31; background: #b7e8ce;[^}]*font: 900 21\.333333px\/1 "Songti SC",SimSun,serif/is);
     expect(content).toMatch(/span \{ transform: translateY\(-1px\); \}/);
   });
 });
