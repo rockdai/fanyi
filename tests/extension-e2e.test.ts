@@ -289,7 +289,7 @@ describe("the built extension in Chrome", () => {
 
     // 真实弹窗一失焦就关闭，再次打开才会看到翻译完成后的状态
     const reopened = await openPopup();
-    expect(await reopened.textContent("#page-status")).toBe("沉浸翻译已开启");
+    expect(await reopened.textContent("#page-status")).toBe("网页翻译已开启");
     expect(await reopened.textContent("#page-title")).toBe("已翻译 6 个段落");
     await reopened.click("#translate-page");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
