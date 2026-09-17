@@ -17,6 +17,7 @@ export interface Settings {
   apiKey: string;
   apiModel: string;
   temperature: number;
+  extraBody: string;
   maxParagraphsPerRequest: number;
   maxCharsPerRequest: number;
   minParagraphLength: number;
@@ -73,6 +74,7 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: "",
   apiModel: "gpt-4o-mini",
   temperature: 1,
+  extraBody: "",
   maxParagraphsPerRequest: 4,
   maxCharsPerRequest: 2000,
   minParagraphLength: 2,

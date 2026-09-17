@@ -39,6 +39,7 @@ nav button.active > span { color: #25634f; }
 .field small { display: block; margin-top: 6px; color: #a2ada8; font-size: 12px; }
 .field input, .field select, .field textarea { width: 100%; padding: 10px 12px; border: 1px solid #dce6e0; border-radius: 9px; outline: none; background: #fafcfb; font-size: 14px; transition: .2s; }
 .field textarea { min-height: 150px; resize: vertical; line-height: 1.7; }
+#extra-body { min-height: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: #6ea990; background: white; box-shadow: 0 0 0 3px rgba(110,169,144,.1); }
 .switch { position: relative; display: block; width: 40px; height: 23px; flex: 0 0 auto; }
 .switch-list { margin-top: 6px; }

@@ -85,6 +85,7 @@
               <label class="field"><span>API Key</span><div class="password-field"><input id="api-key" data-setting="apiKey" type="password" placeholder="sk-..." autocomplete="off" /><button id="toggle-api-key" type="button">显示</button></div></label>
               <label class="field"><span>模型</span><input id="api-model" data-setting="apiModel" type="text" placeholder="gpt-4o-mini" /></label>
               <label class="field"><span>Temperature</span><input data-setting="temperature" type="number" min="0" max="2" step="0.1" /><small>采样发散度，值越小生成越固定；取 0 时几乎总是选择概率最大的词元，默认 1</small></label>
+              <label class="field"><span>额外请求参数</span><textarea id="extra-body" data-setting="extraBody" rows="3" placeholder='{"thinking":{"type":"disabled"}}' spellcheck="false"></textarea><small>JSON 对象，原样合并进请求体。推理模型默认开启思考会明显拖慢翻译，关闭方式：DeepSeek / Kimi / 智谱填 {"thinking":{"type":"disabled"}}，阿里云百炼 Qwen 填 {"enable_thinking":false}，OpenAI GPT-5.1 / Gemini 填 {"reasoning_effort":"none"}，OpenRouter 填 {"reasoning":{"enabled":false}}</small></label>
             </div>
             <div class="card-actions"><button class="secondary-button" id="test-provider">测试连接</button><span id="test-result"></span></div>
           </div>

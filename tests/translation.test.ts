@@ -102,6 +102,26 @@ describe("OpenAI batch translation", () => {
     }
   });
 
+  it("merges the extra body JSON into the request without overriding the dedicated fields", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply("不思考"));
+    vi.stubGlobal("fetch", fetchMock);
+    const extraBody = '{"thinking":{"type":"disabled"},"model":"ignored"}';
+    await expect(translateTexts(["No thinking"], { ...settings, extraBody }, "en", "zh-CN")).resolves.toEqual(["不思考"]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.model).toBe(DEFAULT_SETTINGS.apiModel);
+  });
+
+  it("rejects an extra body that is not a JSON object before sending anything", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const extraBody of ["{oops", "[1]", '"text"', "null"]) {
+      await expect(translateTexts(["Broken extra body"], { ...settings, extraBody }, "en", "zh-CN")).rejects.toThrow("额外请求参数");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("propagates the service error message and sends nothing else", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }));
     vi.stubGlobal("fetch", fetchMock);

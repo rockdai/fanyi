@@ -127,6 +127,15 @@ async function translateWithGoogle(texts: string[], sourceLanguage: string, targ
   return translations;
 }
 
+function parseExtraBody(extraBody: string): Record<string, unknown> {
+  if (!extraBody.trim()) return {};
+  try {
+    const parsed: unknown = JSON.parse(extraBody);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  } catch {}
+  throw new Error("额外请求参数必须是合法的 JSON 对象");
+}
+
 export function buildUserPrompt(texts: string[], sourceLanguage: string, targetLanguage: string): string {
   const from = sourceLanguage === "auto" ? "" : ` from ${languageName(sourceLanguage)}`;
   return `Translate${from} to ${languageName(targetLanguage)}: ${texts.join(`\n\n${PARAGRAPH_SEPARATOR}\n\n`)}`;
@@ -142,6 +151,8 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
       Authorization: `Bearer ${settings.apiKey}`,
     },
     body: JSON.stringify({
+      // 各家关闭思考的参数不同（thinking / enable_thinking / reasoning_effort…），由用户按服务商自填；专属输入框的字段不被覆盖
+      ...parseExtraBody(settings.extraBody),
       model: settings.apiModel,
       temperature: settings.temperature,
       messages: [
