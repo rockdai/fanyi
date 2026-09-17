@@ -794,6 +794,21 @@ describe("selection translation in a real page", () => {
     await page.evaluate("__updateSettings({ maxCharsPerRequest: 2000 })");
   });
 
+  it("cancels the pending request when the popup is closed", async () => {
+    await page.evaluate("window.__holdRequests = true; window.__cancelled = 0; __select('plain')");
+    await page.waitForFunction("window.__pending.length === 1 && __overlay('selection')");
+    await page.evaluate("__overlay('selection').querySelector('.close').click()");
+    expect(await page.evaluate("window.__cancelled")).toBe(1);
+    expect(await page.evaluate("Boolean(__overlay('selection'))")).toBe(false);
+
+    await page.evaluate("__select('next')");
+    await page.waitForFunction("window.__pending.length === 2 && __overlay('selection')");
+    await page.evaluate("document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))");
+    expect(await page.evaluate("window.__cancelled")).toBe(2);
+    expect(await page.evaluate("Boolean(__overlay('selection'))")).toBe(false);
+    await page.evaluate("window.__holdRequests = false; window.__pending.splice(0).forEach((p) => p.resolve())");
+  });
+
   it("stays quiet when selection translation is disabled", async () => {
     await page.evaluate("__updateSettings({ selectionEnabled: false })");
     await page.evaluate("__select('plain')");

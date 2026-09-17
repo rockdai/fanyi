@@ -94,8 +94,17 @@ const STALL_TIMEOUT = 30_000;
 class RetryableError extends Error {}
 class StreamRejectedError extends Error {}
 
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    // 取消要能立刻结束退避等待，否则长 Retry-After 会让已作废的请求一直占着后台
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, milliseconds);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function retryDelay(response: Response, attempt: number): number {
@@ -129,7 +138,7 @@ async function requestWithRetry<T>(url: string, init: RequestInit, read: (respon
       // 429/5xx 多为限流或瞬时故障，按 Retry-After 或指数退避重试，避免整批直接失败
       if ((response.status === 429 || response.status >= 500) && attempt < RETRIES) {
         clearTimeout(timer);
-        await sleep(retryDelay(response, attempt));
+        await sleep(retryDelay(response, attempt), signal);
         continue;
       }
       return await read(response, touch);
@@ -138,7 +147,7 @@ async function requestWithRetry<T>(url: string, init: RequestInit, read: (respon
       const stalled = controller.signal.aborted;
       if (!stalled && !(error instanceof TypeError) && !(error instanceof RetryableError)) throw error;
       if (attempt >= RETRIES) throw new Error(stalled ? "服务响应超时" : error instanceof RetryableError ? error.message : "网络请求失败");
-      await sleep(1000 * 2 ** attempt);
+      await sleep(1000 * 2 ** attempt, signal);
     } finally {
       clearTimeout(timer);
     }
@@ -150,24 +159,26 @@ interface StreamChunk {
   error?: { message?: string };
 }
 
-function parseChunk(data: string): StreamChunk {
+function parseJson<T>(text: string): T | undefined {
   try {
-    return JSON.parse(data) as StreamChunk;
+    return JSON.parse(text) as T;
   } catch {
-    throw new Error("AI 服务返回格式异常");
+    return undefined;
   }
 }
 
 async function readCompletion(response: Response, touch: () => void): Promise<string> {
+  // 正文读取的超时、取消和网络异常要原样传给重试边界，这里只处理真正的解析失败
   if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as OpenAIResponse;
-    const message = payload.error?.message || `AI 服务请求失败（${response.status}）`;
+    const payload = parseJson<OpenAIResponse>(await response.text());
+    const message = payload?.error?.message || `AI 服务请求失败（${response.status}）`;
     // 只实现非流式接口的服务会明确拒绝 stream 参数
     throw response.status < 500 && /stream/i.test(message) ? new StreamRejectedError(message) : new Error(message);
   }
   // 服务忽略 stream 参数时会返回整份 JSON
   if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-    const payload = (await response.json().catch(() => ({}))) as OpenAIResponse;
+    const payload = parseJson<OpenAIResponse>(await response.text());
+    if (!payload) throw new Error("AI 服务返回格式异常");
     return payload.choices?.[0]?.message?.content ?? "";
   }
   const reader = response.body?.getReader();
@@ -195,7 +206,8 @@ async function readCompletion(response: Response, touch: () => void): Promise<st
         void reader.cancel();
         return content;
       }
-      const chunk = parseChunk(data);
+      const chunk = parseJson<StreamChunk>(data);
+      if (!chunk) throw new Error("AI 服务返回格式异常");
       if (chunk.error) throw new Error(chunk.error.message || "AI 服务请求失败");
       const choice = chunk.choices?.[0];
       content += choice?.delta?.content ?? "";

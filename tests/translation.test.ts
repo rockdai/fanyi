@@ -277,16 +277,54 @@ describe("OpenAI batch translation", () => {
     expect(bodyOf(fetchMock.mock.calls[1][1] as RequestInit).stream).toBe(false);
   });
 
-  it("stops retrying once the caller cancels", async () => {
-    const fetchMock = vi.fn().mockImplementation(() => new Response("", { status: 429, headers: { "retry-after": "5" } }));
+  it("stops retrying once the caller cancels, without waiting out the backoff", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => new Response("", { status: 429, headers: { "retry-after": "43200" } }));
     vi.stubGlobal("fetch", fetchMock);
     const controller = new AbortController();
     const pending = translateTexts(["Cancelled"], settings, "en", "zh-CN", controller.signal);
     pending.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(1000);
     controller.abort();
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10);
     await expect(pending).rejects.toThrow("翻译已取消");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries when a plain JSON body hangs", async () => {
+    const hanging = (_url: string, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        controller.enqueue(encode('{"choices":[{"message":{"content":"半'));
+      },
+    }), { status: 200 });
+    const fetchMock = vi.fn().mockImplementationOnce(hanging).mockImplementation(() => reply("恢复"));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["JSON hang"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(pending).resolves.toEqual(["恢复"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries when a plain JSON body's connection drops", async () => {
+    const dropped = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encode('{"choices":'));
+        controller.error(new TypeError("socket closed"));
+      },
+    }), { status: 200 });
+    const fetchMock = vi.fn().mockImplementationOnce(dropped).mockImplementation(() => reply("重连"));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = translateTexts(["JSON drop"], settings, "en", "zh-CN");
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual(["重连"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a malformed plain JSON body without retrying", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => new Response("<html>oops</html>", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["JSON garbage"], settings, "en", "zh-CN")).rejects.toThrow("AI 服务返回格式异常");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

@@ -491,10 +491,18 @@ function languageOptions(languages: LanguageOption[], selected: string): HTMLOpt
   return languages.map(({ code, label }) => new Option(label, code, false, code === selected));
 }
 
+function closeSelection(): void {
+  selectionHost?.remove();
+  selectionHost = null;
+  // 弹窗没了就不该再为它请求或重试
+  selectionRequests.forEach((cancel) => cancel());
+  selectionRequests.clear();
+}
+
 async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<void> {
   const normalized = text.replace(/\s+/g, " ").trim().slice(0, 2000);
   if (normalized.length < 2) return;
-  selectionHost?.remove();
+  closeSelection();
   selectionButton?.remove();
 
   const host = document.createElement("div");
@@ -514,7 +522,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
   source.textContent = normalized;
   from.replaceChildren(...languageOptions(SOURCE_LANGUAGES, settings.selectionSourceLanguage));
   to.replaceChildren(...languageOptions(TARGET_LANGUAGES, settings.selectionTargetLanguage));
-  shadow.querySelector(".close")?.addEventListener("click", () => host.remove());
+  shadow.querySelector(".close")?.addEventListener("click", closeSelection);
   shadow.querySelector(".speak-source")?.addEventListener("click", () => speak(normalized, from.value));
   host.addEventListener("pointerdown", (event) => event.stopPropagation());
   positionSelectionHost(host, rect);
@@ -600,9 +608,8 @@ document.addEventListener("keyup", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   if (isInsideOverlay(event)) return;
-  selectionHost?.remove();
+  closeSelection();
   selectionButton?.remove();
-  selectionHost = null;
   selectionButton = null;
 });
 
