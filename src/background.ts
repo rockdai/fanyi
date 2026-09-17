@@ -5,6 +5,18 @@ import { translateTexts } from "./translation";
 const SELECTION_MENU_ID = "fanyi-translate-selection";
 const PAGE_MENU_ID = "fanyi-toggle-page";
 
+let activeRequests = 0;
+let keepAlive: ReturnType<typeof setInterval> | undefined;
+
+// Chrome 110 起任何扩展 API 调用都会重置 30 秒空闲计时；等待翻译响应期间定时调用，Service Worker 才不会中途被回收
+function holdWorker(): void {
+  if (activeRequests++ === 0) keepAlive = setInterval(() => void chrome.runtime.getPlatformInfo(), 20_000);
+}
+
+function releaseWorker(): void {
+  if (--activeRequests === 0) clearInterval(keepAlive);
+}
+
 function syncContextMenu(): void {
   chrome.contextMenus.removeAll(() => {
     void getSettings().then(({ contextMenuEnabled }) => {
@@ -46,6 +58,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   if (message.type !== "TRANSLATE_TEXTS" && message.type !== "TEST_PROVIDER") return false;
 
   void (async () => {
+    holdWorker();
     try {
       const settings = await getSettings();
       const texts = message.type === "TEST_PROVIDER" ? ["The world is full of things worth understanding."] : message.texts;
@@ -56,6 +69,8 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     } catch (error) {
       const description = error instanceof Error ? error.message : "翻译失败，请稍后重试";
       sendResponse({ ok: false, error: description } satisfies TranslationResponse);
+    } finally {
+      releaseWorker();
     }
   })();
   return true;

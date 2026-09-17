@@ -497,9 +497,10 @@ describe("translation settings in a real page", () => {
   it("ignores a failure of a request from a round that was already restarted", async () => {
     await page.evaluate("window.__holdRequests = true; __updateSettings({ maxParagraphsPerRequest: 2 })");
     await page.evaluate("__restart()");
-    await page.waitForFunction("window.__pending.some((p) => p.texts.length === 2)");
+    // 三个批次并发在途
+    await page.waitForFunction("window.__pending.filter((p) => p.texts.length === 2).length === 3");
     await page.evaluate("__restart()");
-    await page.waitForFunction("window.__pending.filter((p) => p.texts.length === 2).length === 2");
+    await page.waitForFunction("window.__pending.filter((p) => p.texts.length === 2).length === 6");
     await page.evaluate("window.__pending.find((p) => p.texts.length === 2).reject()");
     await page.waitForTimeout(100);
     await page.evaluate("window.__holdRequests = false; window.__pending.splice(0).forEach((p) => p.resolve())");
@@ -596,28 +597,67 @@ describe("translation settings in a real page", () => {
     await page.evaluate("__restart()");
     await settled();
     expect(await page.evaluate("document.querySelector('#flex .fanyi-translation, #flex + .fanyi-translation')?.dataset.error")).toBe("true");
-    expect(await page.evaluate("document.querySelectorAll('#next .fanyi-translation, #next + .fanyi-translation').length")).toBe(0);
+    expect(await page.evaluate("document.querySelector('#next .fanyi-translation, #next + .fanyi-translation')?.textContent")).toBe("翻译失败：request failed on purpose 重试");
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation[data-error] a.fanyi-retry').length")).toBe(4);
     expect(await translation("settle")).toMatchObject({ text: "请仔细阅读安装与配置的完整说明。" });
     expect(await translation("sidediv")).toMatchObject({ text: "译文 Sidebar div text." });
     expect(await page.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: IDS.length - 4 });
     expect(await page.evaluate("document.querySelectorAll('[data-fanyi-processed]').length")).toBe(IDS.length);
     expect(await page.evaluate("document.querySelector('.fanyi-notice')?.textContent")).toBe("4 个段落翻译失败：request failed on purpose");
-    await page.evaluate("window.__failText = null; __toggle()");
+
+    await page.evaluate("window.__failText = null; document.querySelector('#next .fanyi-translation a.fanyi-retry').click()");
+    await page.waitForFunction("document.querySelector('#next .fanyi-translation:not([data-loading])')?.textContent.startsWith('译文')");
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation[data-error]').length")).toBe(3);
+    expect(await page.evaluate("__state()")).toMatchObject({ translating: false, translatedCount: IDS.length - 3 });
+    await page.evaluate("__toggle()");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
   });
 
-  it("stops after three consecutive failed batches and hands the rest back for a retry", async () => {
+  it("pauses after consecutive failed batches, keeps the rest queued and resumes from a retry link", async () => {
     await page.evaluate("window.__failAll = true; window.__sent.length = 0; __updateSettings({ translateTitle: false })");
     await page.evaluate("__restart()");
-    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation[data-error]").length === 3 && !document.querySelector(".fanyi-translation[data-loading]"));
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation[data-error]").length >= 12 && !document.querySelector(".fanyi-translation[data-loading]"));
     await page.waitForTimeout(200);
-    expect(await page.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length")).toBe(3);
-    expect(await page.evaluate("document.querySelectorAll('[data-fanyi-processed]').length")).toBe(12);
+    const sent = await page.evaluate<number>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length");
+    // 并发中的批次不计入连续失败，最坏比 3 多发 2 批
+    expect(sent).toBeGreaterThanOrEqual(3);
+    expect(sent).toBeLessThanOrEqual(5);
+    const sentParagraphs = await page.evaluate<number>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').reduce((n, m) => n + m.texts.length, 0)");
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation[data-error] a.fanyi-retry').length")).toBe(sentParagraphs);
+    expect(await page.evaluate("document.querySelectorAll('[data-fanyi-processed]').length")).toBe(IDS.length);
     expect(await page.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: 0 });
-    await page.evaluate("window.__failAll = false; __toggle()");
+
+    await page.evaluate("window.__failAll = false; document.querySelector('#plain .fanyi-translation a.fanyi-retry').click()");
+    await page.waitForFunction("document.querySelector('#plain .fanyi-translation:not([data-loading])')?.textContent.startsWith('译文')");
+    await settled();
+    // 重试成功后队列里剩下的段落跟着翻完，其余失败段落保留错误和重试链接
+    expect(await page.evaluate("document.querySelectorAll('.fanyi-translation[data-error]').length")).toBe(sentParagraphs - 1);
+    expect(await page.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: IDS.length - sentParagraphs + 1 });
+    await page.evaluate("__toggle()");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
     await page.evaluate("__updateSettings({ translateTitle: true })");
   });
+});
+
+describe("text-heavy pages", () => {
+  it("keeps collecting past the per-scan block limit until the whole page is translated", async () => {
+    const heavy = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
+    await heavy.evaluate(() => {
+      const fragment = document.createDocumentFragment();
+      for (let index = 0; index < 1100; index += 1) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = `Paragraph number ${index} of a very long article.`;
+        fragment.append(paragraph);
+      }
+      document.querySelector(".site")?.append(fragment);
+    });
+    await heavy.evaluate("__updateSettings({ translateFullPage: true, translateTitle: false })");
+    await heavy.evaluate("__toggle()");
+    await heavy.waitForFunction((count) => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === count && !document.querySelector(".fanyi-translation[data-loading]"), IDS.length + 1100, { timeout: 15000 });
+    expect(await heavy.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: IDS.length + 1100 });
+    expect(await heavy.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').every((m) => m.texts.length <= 4)")).toBe(true);
+    await heavy.close();
+  }, 20000);
 });
 
 describe("page load with translate-to-bottom", () => {

@@ -87,7 +87,9 @@ function remember(key: string, value: string): void {
   translationCache.set(key, value);
 }
 
-const GOOGLE_RETRIES = 2;
+const RETRIES = 2;
+// Chrome 会在 fetch 响应头 30 秒未到时直接终止扩展 Service Worker；在同一阈值主动放弃，才有机会重试而不是被回收
+const STALL_TIMEOUT = 30_000;
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -103,12 +105,79 @@ function retryDelay(response: Response, attempt: number): number {
   return 1000 * 2 ** attempt;
 }
 
+async function fetchOnce(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STALL_TIMEOUT);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch {
+    throw new Error(controller.signal.aborted ? "服务响应超时" : "网络请求失败");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
   for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(url, init);
-    // 429/5xx 多为限流或瞬时故障，按 Retry-After 或指数退避重试，避免整批直接失败
-    if ((response.status !== 429 && response.status < 500) || attempt >= GOOGLE_RETRIES) return response;
-    await sleep(retryDelay(response, attempt));
+    try {
+      const response = await fetchOnce(url, init);
+      // 429/5xx 多为限流或瞬时故障，按 Retry-After 或指数退避重试，避免整批直接失败
+      if ((response.status !== 429 && response.status < 500) || attempt >= RETRIES) return response;
+      await sleep(retryDelay(response, attempt));
+    } catch (error) {
+      if (attempt >= RETRIES) throw error;
+      await sleep(1000 * 2 ** attempt);
+    }
+  }
+}
+
+interface StreamChunk {
+  choices?: Array<{ delta?: { content?: string } }>;
+  error?: { message?: string };
+}
+
+function withTimeout<T>(promise: Promise<T>, cancel: () => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cancel();
+      reject(new Error("服务响应中断"));
+    }, STALL_TIMEOUT);
+    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
+function parseChunk(data: string): StreamChunk {
+  try {
+    return JSON.parse(data) as StreamChunk;
+  } catch {
+    throw new Error("AI 服务返回格式异常");
+  }
+}
+
+async function readCompletion(response: Response): Promise<string> {
+  // 服务不支持流式时退回整份 JSON
+  if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+    const payload = (await response.json().catch(() => ({}))) as OpenAIResponse;
+    return payload.choices?.[0]?.message?.content ?? "";
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  for (;;) {
+    const { value, done } = await withTimeout(reader.read(), () => void reader.cancel());
+    if (done) return content;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const data = line.startsWith("data:") ? line.slice(5).trim() : "";
+      if (!data || data === "[DONE]") continue;
+      const chunk = parseChunk(data);
+      if (chunk.error) throw new Error(chunk.error.message || "AI 服务请求失败");
+      content += chunk.choices?.[0]?.delta?.content ?? "";
+    }
   }
 }
 
@@ -157,12 +226,14 @@ export function buildUserPrompt(texts: string[], sourceLanguage: string, targetL
 async function translateWithOpenAI(texts: string[], settings: Settings): Promise<string[]> {
   if (!settings.apiKey.trim()) throw new Error("请先在设置中填写 API Key");
   const endpoint = `${settings.apiBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const response = await fetch(endpoint, {
+  // 流式返回让响应头立刻到达，长译文不会撞上 Service Worker 的 30 秒限制
+  const response = await fetchWithRetry(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
     body: JSON.stringify({
       model: settings.apiModel,
       temperature: settings.temperature,
+      stream: true,
       ...THINKING_OFF[settings.apiVendor],
       ...parseExtraBody(settings.extraBody),
       messages: [
@@ -172,9 +243,11 @@ async function translateWithOpenAI(texts: string[], settings: Settings): Promise
     }),
   });
 
-  const payload = (await response.json().catch(() => ({}))) as OpenAIResponse;
-  if (!response.ok) throw new Error(payload.error?.message || `AI 服务请求失败（${response.status}）`);
-  const content = payload.choices?.[0]?.message?.content;
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as OpenAIResponse;
+    throw new Error(payload.error?.message || `AI 服务请求失败（${response.status}）`);
+  }
+  const content = await readCompletion(response);
   if (!content) throw new Error("AI 服务未返回译文");
   return parseTranslations(content, texts);
 }
