@@ -33,10 +33,8 @@ describe("brand logo", () => {
     expect(logo).toContain(">译</text>");
   });
 
-  it("uses the logo asset throughout extension pages", () => {
-    for (const html of [popup, options]) {
-      expect(html).toContain('class="brand-mark" src="icons/icon-128.png"');
-    }
+  it("uses the logo asset on the settings page", () => {
+    expect(options).toContain('class="brand-mark" src="icons/icon-128.png"');
   });
 
   it("uses the approved mark in injected page controls", () => {
@@ -53,5 +51,20 @@ describe("settings page", () => {
     expect(general.trimEnd()).toMatch(/id="reset-settings">恢复默认设置<\/button>$/);
     expect(options.match(/id="reset-settings"/g)).toHaveLength(1);
     expect(options).not.toContain("PREFERENCES");
+  });
+});
+
+describe("popup panel", () => {
+  it("shows the selection switch, the language pair, the service picker and the translate button in that order", () => {
+    const controls = [...popup.matchAll(/id="(selection-enabled|source-language|target-language|provider|translate-page)"/g)].map(([, id]) => id);
+    expect(controls).toEqual(["selection-enabled", "source-language", "target-language", "provider", "translate-page"]);
+    expect(popup).toContain('<option value="google">');
+    expect(popup).toContain('<option value="openai">');
+  });
+
+  it("drops the brand header, the header settings button and the translation style switcher", () => {
+    for (const removed of ["brand", "open-settings", "data-style", "status-card", "engine-badge"]) {
+      expect(popup).not.toContain(removed);
+    }
   });
 });

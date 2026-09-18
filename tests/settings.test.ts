@@ -20,6 +20,14 @@ describe("selection languages", () => {
   });
 });
 
+describe("page translation switch", () => {
+  it("stays off unless it was turned on, whatever the translate-to-bottom option says", () => {
+    expect(mergeSettings({})).toMatchObject({ pageTranslationEnabled: false });
+    expect(mergeSettings({ translateFullPage: true })).toMatchObject({ pageTranslationEnabled: false });
+    expect(mergeSettings({ pageTranslationEnabled: true })).toMatchObject({ pageTranslationEnabled: true });
+  });
+});
+
 describe("language comparison", () => {
   it("matches on the primary language but keeps simplified and traditional Chinese apart", () => {
     expect(isSameLanguage("en-US", "en")).toBe(true);

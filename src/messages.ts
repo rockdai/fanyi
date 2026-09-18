@@ -36,6 +36,7 @@ export interface TranslationResponse {
 }
 
 export interface PageStateResponse {
+  enabled: boolean;
   active: boolean;
   translating: boolean;
   supported: boolean;

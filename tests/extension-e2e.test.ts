@@ -279,26 +279,25 @@ describe("the built extension in Chrome", () => {
 
   it("drives page translation from the popup and lets it switch selection translation off and on", async () => {
     const popup = await openPopup();
-    expect(await popup.textContent("#page-status")).toBe("准备就绪");
+    expect(await popup.textContent("#translate-page")).toBe("翻译");
     expect(await popup.isEnabled("#translate-page")).toBe(true);
     await popup.click("#translate-page");
     await settled(6);
-    // 弹窗保持打开也能看到翻译完成，电源按钮重新可用
-    await expect.poll(() => popup.textContent("#page-status")).toBe("网页翻译已开启");
-    expect(await popup.textContent("#page-title")).toBe("已翻译 6 个段落");
+    // 弹窗保持打开也能看到翻译完成，按钮就地变成关闭入口
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("显示原文");
     expect(await popup.getAttribute("#translate-page", "aria-pressed")).toBe("true");
     expect(await popup.isEnabled("#translate-page")).toBe(true);
     expect(await badgeText()).toBe("ON");
     await popup.click("#translate-page");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
-    expect(await popup.textContent("#page-status")).toBe("准备就绪");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
     expect(await badgeText()).toBe("");
 
     // 从快捷键入口开关时弹窗同样跟着变
     await askActiveTab("TOGGLE_PAGE");
-    await expect.poll(() => popup.textContent("#page-title")).toBe("已翻译 6 个段落");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("显示原文");
     await askActiveTab("TOGGLE_PAGE");
-    await expect.poll(() => popup.textContent("#page-status")).toBe("准备就绪");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
 
     await popup.click("label.selection-row");
     expect(await popup.isChecked("#selection-enabled")).toBe(false);
@@ -315,6 +314,106 @@ describe("the built extension in Chrome", () => {
     await page.mouse.click(5, 5);
     await expect.poll(selectionCard).toBeUndefined();
     await popup.close();
+  }, 30000);
+
+  it("switches the translation service from the popup and keeps every page opened while the switch is on translated", async () => {
+    const popup = await openPopup();
+    expect(await popup.inputValue("#provider")).toBe("google");
+    await popup.click("#translate-page");
+    await settled(6);
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("显示原文");
+
+    // 开关是全局的，之后打开的网页自己就开始翻译，不用再点一次
+    const second = await context.newPage();
+    await second.goto(`${origin}/article`);
+    await second.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 6 && !document.querySelector(".fanyi-translation[data-loading]"), undefined, { timeout: 15000 });
+    expect(await second.evaluate(() => document.querySelector("#lead .fanyi-translation, #lead + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${LEAD}`);
+
+    // 在任意一个标签页关掉，已经打开的网页都恢复原文
+    await second.bringToFront();
+    await askActiveTab("TOGGLE_PAGE");
+    await second.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await second.close();
+    await page.bringToFront();
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    await popup.close();
+  }, 30000);
+
+  it("turns the global switch off from a supported page that needs no translation", async () => {
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: true, active: true });
+    await settled(6);
+    const chinese = await context.newPage();
+    await chinese.goto(`${origin}/zh`);
+    await chinese.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
+    await chinese.bringToFront();
+
+    // 这一页因为语言相同没有译文，但全局开关是开的，弹窗照样给出关闭入口
+    const popup = await openPopup();
+    expect(await popup.textContent("#translate-page")).toBe("显示原文");
+    await popup.click("#translate-page");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    expect(await popup.getAttribute("#translate-page", "aria-pressed")).toBe("false");
+    await popup.close();
+    await chinese.close();
+    await page.bringToFront();
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+
+    // 关掉之后新打开的英文页不再自动翻译
+    const fresh = await context.newPage();
+    await fresh.goto(`${origin}/article`);
+    await fresh.waitForTimeout(1000);
+    expect(await fresh.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    await fresh.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("translates a page that needed no translation once the popup picks another target language", async () => {
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: true, active: true });
+    await settled(6);
+    const chinese = await context.newPage();
+    await chinese.goto(`${origin}/zh`);
+    await chinese.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
+    await chinese.bringToFront();
+    const popup = await openPopup();
+
+    // 全局开关开着，换一种目标语言后这一页不用刷新就该有译文
+    await popup.selectOption("#target-language", "en");
+    await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
+    expect(await chinese.evaluate(() => document.querySelector("#cn .fanyi-translation, #cn + .fanyi-translation")?.textContent ?? null)).toBe("译文 这是一段已经是中文的正文。");
+
+    await popup.selectOption("#target-language", "zh-CN");
+    await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await popup.click("#translate-page");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    await popup.close();
+    await chinese.close();
+    await page.bringToFront();
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+  }, 30000);
+
+  it("stays off after being turned off even when translate-to-bottom is on", async () => {
+    const options = await openOptions("general");
+    await options.click("label.switch-row:has(input[data-setting='translateFullPage'])");
+    await expect.poll(() => options.isChecked("input[data-setting='translateFullPage']")).toBe(true);
+    await page.bringToFront();
+
+    await askActiveTab("TOGGLE_PAGE");
+    await settled(6);
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: false, active: false });
+
+    // 明确关掉后，“立即翻译到页面底部”不再把新打开的网页重新打开翻译
+    const fresh = await context.newPage();
+    await fresh.goto(`${origin}/article`);
+    await fresh.waitForTimeout(1000);
+    expect(await fresh.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    await fresh.close();
+
+    await options.bringToFront();
+    await options.click("label.switch-row:has(input[data-setting='translateFullPage'])");
+    await expect.poll(() => options.isChecked("input[data-setting='translateFullPage']")).toBe(false);
+    await options.close();
+    await page.bringToFront();
   }, 30000);
 
   it("applies options live: a small eager budget defers paragraphs below the fold and excluding the site turns translation off", async () => {
@@ -344,6 +443,9 @@ describe("the built extension in Chrome", () => {
     await page.bringToFront();
     await expect.poll(async () => (await askActiveTab("GET_PAGE_STATE")).supported).toBe(true);
     await options.close();
+    // 站点重新可用后本页跟着开关继续翻译，用例收尾时把开关关掉
+    await expect.poll(async () => (await askActiveTab("TOGGLE_PAGE")).enabled).toBe(false);
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
   }, 30000);
 
   it("uses a self-hosted AI service configured on the options page and recovers from a rejected request through the retry link", async () => {

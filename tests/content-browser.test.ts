@@ -741,15 +741,26 @@ describe("text-heavy pages", () => {
   }, 20000);
 });
 
-describe("page load with translate-to-bottom", () => {
-  it("starts translating on its own only when the option is on", async () => {
-    const auto = await openPage('{ sourceLanguage: "de", targetLanguage: "en", translateFullPage: true }');
+describe("page load with the translation switch", () => {
+  it("starts translating on its own only when the switch is on, whatever the scope option says", async () => {
+    const auto = await openPage('{ sourceLanguage: "de", targetLanguage: "en", pageTranslationEnabled: true, translateFullPage: true }');
     await auto.waitForFunction(() => document.querySelector(".fanyi-translation") && !document.querySelector(".fanyi-translation[data-loading]"));
     expect(await auto.evaluate("__state()")).toMatchObject({ active: true, translatedCount: IDS.length });
     expect(await auto.evaluate("Boolean(__translation('far'))")).toBe(true);
     await auto.close();
 
-    const manual = await openPage('{ sourceLanguage: "de", targetLanguage: "en", translateFullPage: false }');
+    const eager = await openPage('{ sourceLanguage: "de", targetLanguage: "en", pageTranslationEnabled: true }');
+    await eager.waitForFunction(() => document.querySelector(".fanyi-translation") && !document.querySelector(".fanyi-translation[data-loading]"));
+    expect(await eager.evaluate("__state()")).toMatchObject({ active: true });
+    await eager.close();
+
+    // 开关关着时，“一次性翻译到页面底部”只决定范围，不会自己开始翻译
+    const scopeOnly = await openPage('{ sourceLanguage: "de", targetLanguage: "en", translateFullPage: true }');
+    await scopeOnly.waitForTimeout(500);
+    expect(await scopeOnly.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
+    await scopeOnly.close();
+
+    const manual = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
     await manual.waitForTimeout(500);
     expect(await manual.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
     await manual.close();
