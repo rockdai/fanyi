@@ -240,7 +240,7 @@ beforeAll(async () => {
   css = readFileSync(new URL("../public/content.css", import.meta.url), "utf8");
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
-});
+}, 90000);
 
 afterAll(async () => {
   await browser?.close();
