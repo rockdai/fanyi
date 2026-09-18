@@ -340,6 +340,58 @@ describe("the built extension in Chrome", () => {
     await popup.close();
   }, 30000);
 
+  it("turns the global switch off from a supported page that needs no translation", async () => {
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: true, active: true });
+    await settled(6);
+    const chinese = await context.newPage();
+    await chinese.goto(`${origin}/zh`);
+    await chinese.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
+    await chinese.bringToFront();
+
+    // 这一页因为语言相同没有译文，但全局开关是开的，弹窗照样给出关闭入口
+    const popup = await openPopup();
+    expect(await popup.textContent("#translate-page")).toBe("显示原文");
+    await popup.click("#translate-page");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    expect(await popup.getAttribute("#translate-page", "aria-pressed")).toBe("false");
+    await popup.close();
+    await chinese.close();
+    await page.bringToFront();
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+
+    // 关掉之后新打开的英文页不再自动翻译
+    const fresh = await context.newPage();
+    await fresh.goto(`${origin}/article`);
+    await fresh.waitForTimeout(1000);
+    expect(await fresh.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    await fresh.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("stays off after being turned off even when translate-to-bottom is on", async () => {
+    const options = await openOptions("general");
+    await options.click("label.switch-row:has(input[data-setting='translateFullPage'])");
+    await expect.poll(() => options.isChecked("input[data-setting='translateFullPage']")).toBe(true);
+    await page.bringToFront();
+
+    await askActiveTab("TOGGLE_PAGE");
+    await settled(6);
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: false, active: false });
+
+    // 明确关掉后，“立即翻译到页面底部”不再把新打开的网页重新打开翻译
+    const fresh = await context.newPage();
+    await fresh.goto(`${origin}/article`);
+    await fresh.waitForTimeout(1000);
+    expect(await fresh.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    await fresh.close();
+
+    await options.bringToFront();
+    await options.click("label.switch-row:has(input[data-setting='translateFullPage'])");
+    await expect.poll(() => options.isChecked("input[data-setting='translateFullPage']")).toBe(false);
+    await options.close();
+    await page.bringToFront();
+  }, 30000);
+
   it("applies options live: a small eager budget defers paragraphs below the fold and excluding the site turns translation off", async () => {
     const options = await openOptions("general");
     await setOption(options, "input[data-setting='eagerCharacters']", "60");
@@ -367,6 +419,9 @@ describe("the built extension in Chrome", () => {
     await page.bringToFront();
     await expect.poll(async () => (await askActiveTab("GET_PAGE_STATE")).supported).toBe(true);
     await options.close();
+    // 站点重新可用后本页跟着开关继续翻译，用例收尾时把开关关掉
+    await expect.poll(async () => (await askActiveTab("TOGGLE_PAGE")).enabled).toBe(false);
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
   }, 30000);
 
   it("uses a self-hosted AI service configured on the options page and recovers from a rejected request through the retry link", async () => {

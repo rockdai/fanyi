@@ -72,6 +72,8 @@ const visibilityObserver = new IntersectionObserver((entries) => {
 
 function pageState(): PageStateResponse {
   return {
+    // 正在翻译的页面一律报告开关已开，开关的写入是异步的，中途广播的状态不能倒退回未开启
+    enabled: settings.pageTranslationEnabled || pageTranslationOn(),
     active,
     translating,
     supported,
@@ -434,15 +436,16 @@ function stopTranslation(): void {
 
 async function togglePage(): Promise<PageStateResponse> {
   // 网页翻译是全局开关，其他标签页和之后打开的网页都跟着这个状态走
-  if (pageTranslationOn()) {
-    void saveSettings({ pageTranslationEnabled: false });
+  // 开关已打开就一律关掉它，本页可能因为语言相同而没有译文，同样要能从这里关
+  if (settings.pageTranslationEnabled || pageTranslationOn()) {
+    settings = await saveSettings({ pageTranslationEnabled: false });
     stopTranslation();
     return pageState();
   }
   const state = await translatePage(false);
   // 页面语言与目标语言相同而没开始翻译时不打开全局开关
-  if (state.active) void saveSettings({ pageTranslationEnabled: true });
-  return state;
+  if (state.active) settings = await saveSettings({ pageTranslationEnabled: true });
+  return pageState();
 }
 
 function selectionStyles(): string {
@@ -662,14 +665,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   void getSettings().then((nextSettings) => {
     settings = nextSettings;
+    const wasSupported = supported;
     supported = !isSiteExcluded(location.hostname, settings.excludedSites);
     applyTranslationStyle();
     if (!supported) {
       if (active) stopTranslation();
       return;
     }
-    // 全局开关在别的标签页被切换时本页跟随，只看开关本身的变化，免得每次改设置都重试被拒绝的页面
-    if (!changes.pageTranslationEnabled) return;
+    // 只在开关本身变化或本站重新被允许时跟随，免得每次改设置都重试语言相同而拒绝翻译的页面
+    if (!changes.pageTranslationEnabled && wasSupported) return;
     if (settings.pageTranslationEnabled && !pageTranslationOn()) void translatePage(false);
     if (!settings.pageTranslationEnabled && pageTranslationOn()) stopTranslation();
   });
@@ -678,6 +682,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 void getSettings().then((initialSettings) => {
   settings = initialSettings;
   supported = !isSiteExcluded(location.hostname, settings.excludedSites);
-  // 网页翻译开关或“立即翻译到页面底部”打开时，进入网页就开始翻译
-  if (supported && (settings.pageTranslationEnabled || settings.translateFullPage)) void translatePage(false);
+  // 网页翻译开关打开时，进入网页就开始翻译
+  if (supported && settings.pageTranslationEnabled) void translatePage(false);
 });

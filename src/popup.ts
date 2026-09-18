@@ -10,7 +10,7 @@ const providerHint = document.querySelector<HTMLElement>("#provider-hint")!;
 
 let settings: Settings;
 let activeTab: chrome.tabs.Tab | undefined;
-let pageState: PageStateResponse = { active: false, translating: false, supported: false, translatedCount: 0 };
+let pageState: PageStateResponse = { enabled: false, active: false, translating: false, supported: false, translatedCount: 0 };
 
 function fillLanguages(): void {
   sourceSelect.replaceChildren(...SOURCE_LANGUAGES.map(({ code, label }) => new Option(label, code)));
@@ -40,9 +40,10 @@ function renderSettings(): void {
 }
 
 function renderPageState(): void {
-  translateButton.setAttribute("aria-pressed", String(pageState.active));
+  // 按钮跟随全局开关，本页因为语言相同而没有译文时也能从这里关掉翻译
+  translateButton.setAttribute("aria-pressed", String(pageState.enabled));
   translateButton.disabled = !pageState.supported;
-  translateButton.textContent = !pageState.supported ? "当前页面不可用" : pageState.active ? "显示原文" : "翻译";
+  translateButton.textContent = !pageState.supported ? "当前页面不可用" : pageState.enabled ? "显示原文" : "翻译";
 }
 
 async function updateSetting(patch: Partial<Settings>, restart = false): Promise<void> {
@@ -55,7 +56,7 @@ async function updateSetting(patch: Partial<Settings>, restart = false): Promise
 }
 
 translateButton.addEventListener("click", async () => {
-  translateButton.textContent = pageState.active ? "正在恢复原文" : "正在分析正文";
+  translateButton.textContent = pageState.enabled ? "正在恢复原文" : "正在分析正文";
   try {
     pageState = await sendToTab<PageStateResponse>({ type: "TOGGLE_PAGE" });
   } catch {
@@ -97,7 +98,7 @@ async function initialize(): Promise<void> {
   try {
     pageState = await sendToTab<PageStateResponse>({ type: "GET_PAGE_STATE" });
   } catch {
-    pageState = { active: false, translating: false, supported: false, translatedCount: 0 };
+    pageState = { enabled: false, active: false, translating: false, supported: false, translatedCount: 0 };
   }
   renderSettings();
   renderPageState();
