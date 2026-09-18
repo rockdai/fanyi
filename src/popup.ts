@@ -50,7 +50,8 @@ async function updateSetting(patch: Partial<Settings>, restart = false): Promise
   settings = await saveSettings(patch);
   renderSettings();
   if (!pageState.supported) return;
-  const message: RuntimeMessage = { type: restart && pageState.active ? "RESTART_TRANSLATION" : "SETTINGS_UPDATED" };
+  // 开关开着就重新评估当前页，本页可能因为之前的目标语言相同而没有译文
+  const message: RuntimeMessage = { type: restart && pageState.enabled ? "RESTART_TRANSLATION" : "SETTINGS_UPDATED" };
   pageState = await sendToTab<PageStateResponse>(message).catch(() => pageState);
   renderPageState();
 }

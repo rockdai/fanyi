@@ -368,6 +368,30 @@ describe("the built extension in Chrome", () => {
     await page.bringToFront();
   }, 30000);
 
+  it("translates a page that needed no translation once the popup picks another target language", async () => {
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: true, active: true });
+    await settled(6);
+    const chinese = await context.newPage();
+    await chinese.goto(`${origin}/zh`);
+    await chinese.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
+    await chinese.bringToFront();
+    const popup = await openPopup();
+
+    // 全局开关开着，换一种目标语言后这一页不用刷新就该有译文
+    await popup.selectOption("#target-language", "en");
+    await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
+    expect(await chinese.evaluate(() => document.querySelector("#cn .fanyi-translation, #cn + .fanyi-translation")?.textContent ?? null)).toBe("译文 这是一段已经是中文的正文。");
+
+    await popup.selectOption("#target-language", "zh-CN");
+    await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await popup.click("#translate-page");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    await popup.close();
+    await chinese.close();
+    await page.bringToFront();
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+  }, 30000);
+
   it("stays off after being turned off even when translate-to-bottom is on", async () => {
     const options = await openOptions("general");
     await options.click("label.switch-row:has(input[data-setting='translateFullPage'])");
