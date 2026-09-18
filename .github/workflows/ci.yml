@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci
+      # 扩展端到端测试运行在 Playwright 的 Chrome for Testing 上，runner 自带的 Google Chrome 只覆盖内容脚本测试
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
