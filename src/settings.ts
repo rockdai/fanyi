@@ -5,6 +5,7 @@ export type LoadingStyle = "spinner" | "none";
 export type ApiVendor = "none" | "openai" | "deepseek" | "kimi" | "zhipu" | "qwen" | "gemini" | "openrouter" | "vllm";
 
 export interface Settings {
+  pageTranslationEnabled: boolean;
   selectionEnabled: boolean;
   selectionTrigger: SelectionTrigger;
   selectionSourceLanguage: string;
@@ -63,6 +64,7 @@ export function languageName(code: string): string {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  pageTranslationEnabled: false,
   selectionEnabled: true,
   selectionTrigger: "auto",
   selectionSourceLanguage: "auto",

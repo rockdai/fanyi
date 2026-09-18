@@ -279,26 +279,25 @@ describe("the built extension in Chrome", () => {
 
   it("drives page translation from the popup and lets it switch selection translation off and on", async () => {
     const popup = await openPopup();
-    expect(await popup.textContent("#page-status")).toBe("准备就绪");
+    expect(await popup.textContent("#translate-page")).toBe("翻译");
     expect(await popup.isEnabled("#translate-page")).toBe(true);
     await popup.click("#translate-page");
     await settled(6);
-    // 弹窗保持打开也能看到翻译完成，电源按钮重新可用
-    await expect.poll(() => popup.textContent("#page-status")).toBe("网页翻译已开启");
-    expect(await popup.textContent("#page-title")).toBe("已翻译 6 个段落");
+    // 弹窗保持打开也能看到翻译完成，按钮就地变成关闭入口
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("显示原文");
     expect(await popup.getAttribute("#translate-page", "aria-pressed")).toBe("true");
     expect(await popup.isEnabled("#translate-page")).toBe(true);
     expect(await badgeText()).toBe("ON");
     await popup.click("#translate-page");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
-    expect(await popup.textContent("#page-status")).toBe("准备就绪");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
     expect(await badgeText()).toBe("");
 
     // 从快捷键入口开关时弹窗同样跟着变
     await askActiveTab("TOGGLE_PAGE");
-    await expect.poll(() => popup.textContent("#page-title")).toBe("已翻译 6 个段落");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("显示原文");
     await askActiveTab("TOGGLE_PAGE");
-    await expect.poll(() => popup.textContent("#page-status")).toBe("准备就绪");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
 
     await popup.click("label.selection-row");
     expect(await popup.isChecked("#selection-enabled")).toBe(false);
@@ -314,6 +313,30 @@ describe("the built extension in Chrome", () => {
     expect(googleRequests.at(-1)).toEqual([MASTHEAD]);
     await page.mouse.click(5, 5);
     await expect.poll(selectionCard).toBeUndefined();
+    await popup.close();
+  }, 30000);
+
+  it("switches the translation service from the popup and keeps every page opened while the switch is on translated", async () => {
+    const popup = await openPopup();
+    expect(await popup.inputValue("#provider")).toBe("google");
+    await popup.click("#translate-page");
+    await settled(6);
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("显示原文");
+
+    // 开关是全局的，之后打开的网页自己就开始翻译，不用再点一次
+    const second = await context.newPage();
+    await second.goto(`${origin}/article`);
+    await second.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 6 && !document.querySelector(".fanyi-translation[data-loading]"), undefined, { timeout: 15000 });
+    expect(await second.evaluate(() => document.querySelector("#lead .fanyi-translation, #lead + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${LEAD}`);
+
+    // 在任意一个标签页关掉，已经打开的网页都恢复原文
+    await second.bringToFront();
+    await askActiveTab("TOGGLE_PAGE");
+    await second.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await second.close();
+    await page.bringToFront();
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
     await popup.close();
   }, 30000);
 

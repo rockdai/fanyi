@@ -422,14 +422,27 @@ function removePageTranslations(): void {
   pageRequests.clear();
 }
 
+function pageTranslationOn(): boolean {
+  return active || startup !== null;
+}
+
+function stopTranslation(): void {
+  active = false;
+  removePageTranslations();
+  notifyState();
+}
+
 async function togglePage(): Promise<PageStateResponse> {
-  if (active || startup) {
-    active = false;
-    removePageTranslations();
-    notifyState();
+  // 网页翻译是全局开关，其他标签页和之后打开的网页都跟着这个状态走
+  if (pageTranslationOn()) {
+    void saveSettings({ pageTranslationEnabled: false });
+    stopTranslation();
     return pageState();
   }
-  return translatePage(false);
+  const state = await translatePage(false);
+  // 页面语言与目标语言相同而没开始翻译时不打开全局开关
+  if (state.active) void saveSettings({ pageTranslationEnabled: true });
+  return state;
 }
 
 function selectionStyles(): string {
@@ -645,23 +658,26 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   return false;
 });
 
-chrome.storage.onChanged.addListener((_changes, areaName) => {
+chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   void getSettings().then((nextSettings) => {
     settings = nextSettings;
     supported = !isSiteExcluded(location.hostname, settings.excludedSites);
     applyTranslationStyle();
-    if (!supported && active) {
-      active = false;
-      removePageTranslations();
-      notifyState();
+    if (!supported) {
+      if (active) stopTranslation();
+      return;
     }
+    // 全局开关在别的标签页被切换时本页跟随，只看开关本身的变化，免得每次改设置都重试被拒绝的页面
+    if (!changes.pageTranslationEnabled) return;
+    if (settings.pageTranslationEnabled && !pageTranslationOn()) void translatePage(false);
+    if (!settings.pageTranslationEnabled && pageTranslationOn()) stopTranslation();
   });
 });
 
 void getSettings().then((initialSettings) => {
   settings = initialSettings;
   supported = !isSiteExcluded(location.hostname, settings.excludedSites);
-  // 开启“立即翻译到页面底部”时进入网页就开始翻译
-  if (supported && settings.translateFullPage) void translatePage(false);
+  // 网页翻译开关或“立即翻译到页面底部”打开时，进入网页就开始翻译
+  if (supported && (settings.pageTranslationEnabled || settings.translateFullPage)) void translatePage(false);
 });
