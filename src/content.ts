@@ -639,7 +639,12 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
   if (message.type === "RESTART_TRANSLATION") {
-    void translatePage(true).then(sendResponse);
+    // 发起方先写存储再发消息，storage 变更回调可能更晚到，重启必须自己读一遍最新设置
+    void getSettings().then((nextSettings) => {
+      settings = nextSettings;
+      applyTranslationStyle();
+      return translatePage(true);
+    }).then(sendResponse);
     return true;
   }
   if (message.type === "SETTINGS_UPDATED") {
