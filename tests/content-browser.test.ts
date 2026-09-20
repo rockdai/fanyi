@@ -687,6 +687,22 @@ describe("translation settings in a real page", () => {
   });
 });
 
+describe("restart after a settings write", () => {
+  it("reads the settings that were just saved instead of the ones it had cached", async () => {
+    const fresh = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
+    await fresh.evaluate("__toggle()");
+    await fresh.waitForFunction(() => document.querySelector(".fanyi-translation") && !document.querySelector(".fanyi-translation[data-loading]"));
+
+    // 改存储但不通知内容脚本，模拟消息比 storage 变更回调先到
+    await fresh.evaluate("window.__sent.length = 0; Object.assign(__stored(), { targetLanguage: 'ja' }); __restart()");
+    await fresh.waitForFunction("window.__sent.some((m) => m.type === 'TRANSLATE_TEXTS')");
+    const targets = await fresh.evaluate<string[]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').map((m) => m.targetLanguage)");
+    expect(targets.length).toBeGreaterThan(0);
+    expect([...new Set(targets)]).toEqual(["ja"]);
+    await fresh.close();
+  });
+});
+
 describe("text-heavy pages", () => {
   it("keeps a failure pause through idle continuation and resumes everything from one retry", async () => {
     const heavy = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');

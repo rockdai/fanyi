@@ -7,6 +7,7 @@ const logo = readFileSync(new URL("../public/icons/icon.svg", import.meta.url), 
 const popup = readFileSync(new URL("../popup.html", import.meta.url), "utf8");
 const options = readFileSync(new URL("../options.html", import.meta.url), "utf8");
 const content = readFileSync(new URL("../src/content.ts", import.meta.url), "utf8");
+const listing = readFileSync(new URL("../store/listing.md", import.meta.url), "utf8");
 
 describe("translation stylesheet", () => {
   it("pins inherited typography and color so host page rules cannot override them", () => {
@@ -66,5 +67,19 @@ describe("popup panel", () => {
     for (const removed of ["brand", "open-settings", "data-style", "status-card", "engine-badge"]) {
       expect(popup).not.toContain(removed);
     }
+  });
+});
+
+describe("store listing", () => {
+  it("names no third-party model vendor, which the store rejected as keyword spam", () => {
+    for (const vendor of ["DeepSeek", "Kimi", "智谱", "通义千问", "Qwen", "Gemini", "OpenRouter", "vLLM"]) {
+      expect(listing).not.toContain(vendor);
+    }
+  });
+
+  it("still says which interface a self-hosted service has to speak", () => {
+    const description = listing.match(/\*\*详细说明\*\*：\n\n```\n([\s\S]*?)```/)?.[1] ?? "";
+    expect(description).toContain("OpenAI 兼容接口");
+    expect(description).toContain("API Key 只保存在浏览器本地");
   });
 });
