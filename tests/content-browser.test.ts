@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { splitText } from "../src/paragraphs";
 
 const TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
 const IDS = ["styled", "plain", "height", "lines", "flex", "grid", "grow", "next", "settle", "after", "long", "ownbg", "item", "cell", "far", "linkpara", "side", "sidediv"];
@@ -728,6 +729,42 @@ describe("page language", () => {
 });
 
 describe("unchanged translation results", () => {
+  it.each([
+    ["sentence boundaries", "第一句话在这里。".repeat(300) + "最后一句。"],
+    ["hard cuts", "连续的中文文本".repeat(320)],
+  ])("hides unchanged paragraphs and titles split at %s", async (_boundary, source) => {
+    const pieces = splitText(source, 2000);
+    expect(pieces.length).toBeGreaterThan(1);
+    expect(pieces.join(" ")).not.toBe(source);
+    const fresh = await openPage('{ sourceLanguage: "auto", targetLanguage: "zh-CN", detectSameLanguage: false, sentenceBreaks: true }');
+    await fresh.evaluate(`document.querySelector('.site').innerHTML = ${JSON.stringify(`<p id="unchanged">${source}</p><p id="changed">This paragraph needs translation.</p>`)}; document.title = ${JSON.stringify(source)}; window.__unchanged = ${JSON.stringify(pieces)}`);
+
+    await fresh.evaluate("__toggleAsync()");
+    await fresh.waitForFunction("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length === 5 && !document.querySelector('.fanyi-translation[data-loading]')");
+    expect(await fresh.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(1);
+    expect(await fresh.evaluate("document.getElementById('unchanged').textContent")).toBe(source);
+    expect(await fresh.evaluate("__translation('changed').text")).toBe("译文 This paragraph needs translation.");
+    expect(await fresh.evaluate("document.title")).toBe(source);
+    expect(await fresh.evaluate("__state()")).toMatchObject({ translating: false, translatedCount: 1 });
+    await fresh.close();
+  });
+
+  it("hides an unchanged split selection but keeps a changed fragment visible", async () => {
+    const source = "第一句话在这里。".repeat(20) + "最后一句。";
+    const pieces = splitText(source, 100);
+    expect(pieces.length).toBeGreaterThan(1);
+    const fresh = await openPage('{ sourceLanguage: "de", targetLanguage: "zh-CN", maxCharsPerRequest: 100 }');
+    await fresh.evaluate(`document.getElementById('plain').textContent = ${JSON.stringify(source)}; window.__unchanged = ${JSON.stringify(pieces)}; __select('plain')`);
+    await fresh.waitForFunction("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length === 2 && (!__popup() || !__popup().loading)");
+    expect(await fresh.evaluate("Boolean(__overlay('selection'))")).toBe(false);
+
+    await fresh.evaluate(`window.__sent.length = 0; window.__unchanged = ${JSON.stringify(pieces.slice(0, -1))}; __select('plain')`);
+    await fresh.waitForFunction("__popup() && !__popup().loading");
+    expect(await fresh.evaluate("__popup().text")).toBe(pieces.map((piece, index) => index === pieces.length - 1 ? `译文 ${piece}` : piece).join(" "));
+    expect(await fresh.evaluate("__popup().visible")).toBe(true);
+    await fresh.close();
+  });
+
   it("skips target-language paragraphs inside a mixed page before sending a request", async () => {
     const targetText = "这是一段已经是中文的正文。";
     const foreignText = "This paragraph still needs translation.";

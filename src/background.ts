@@ -56,7 +56,8 @@ async function translate(message: TranslateTextsMessage | TestProviderMessage, s
     const texts = message.type === "TEST_PROVIDER" ? ["The world is full of things worth understanding."] : message.texts;
     const targetLanguage = message.type === "TEST_PROVIDER" ? settings.targetLanguage : message.targetLanguage;
     // 测试连接必须真正请求服务，目标是英文时不能被同语种短路拦下
-    const sourceLanguage = message.type === "TEST_PROVIDER" ? isSameLanguage("en", targetLanguage) ? "auto" : "en" : message.sourceLanguage;
+    const testSourceLanguage = isSameLanguage("en", targetLanguage) ? "auto" : "en";
+    const sourceLanguage = message.type === "TEST_PROVIDER" ? testSourceLanguage : message.sourceLanguage;
     const translations = await translateTexts(texts, settings, sourceLanguage, targetLanguage, signal);
     return { ok: true, translations };
   } catch (error) {

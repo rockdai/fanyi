@@ -303,9 +303,9 @@ function sendTranslationRequest(texts: string[], sourceLanguage: string, targetL
   });
 }
 
-async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string, detectTargetLanguage: boolean, stillWanted: () => boolean, requests: Set<() => void>): Promise<string[]> {
+async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string, options: { detectTargetLanguage: boolean }, stillWanted: () => boolean, requests: Set<() => void>): Promise<string[]> {
   // 正文、标题、划词都经过这里：超长文本拆段、按段落数和字符数分批，再按原顺序回组
-  const unnecessary = await Promise.all(texts.map((text) => translationUnnecessary(text, sourceLanguage, targetLanguage, detectTargetLanguage)));
+  const unnecessary = await Promise.all(texts.map((text) => translationUnnecessary(text, sourceLanguage, targetLanguage, options.detectTargetLanguage)));
   const pieces = texts.map((text, index) => unnecessary[index] ? [] : splitText(text, settings.maxCharsPerRequest));
   const flat = pieces.flat();
   const translated: string[] = [];
@@ -323,7 +323,11 @@ async function requestTranslations(texts: string[], sourceLanguage: string, targ
     translated.push(...batchTranslations);
   }
   let cursor = 0;
-  return pieces.map(({ length }, index) => length ? translated.slice(cursor, (cursor += length)).join(" ") : texts[index]);
+  return pieces.map((chunks, index) => {
+    const results = translated.slice(cursor, (cursor += chunks.length));
+    // 分片全部未变时还原原文，避免回组分隔符制造差异。
+    return chunks.every((chunk, offset) => chunk === results[offset]) ? texts[index] : results.join(" ");
+  });
 }
 
 function drainQueue(): void {
@@ -344,7 +348,7 @@ async function translateBatch(current: Run): Promise<void> {
   const batch = queue.splice(0, batchSizeFor(candidates.map(({ text }) => text.length), settings.maxCharsPerRequest));
   const placeholders = batch.map((paragraph) => createTranslationElement(paragraph));
   try {
-    const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage, settings.detectSameLanguage, () => run === current, pageRequests);
+    const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage, { detectTargetLanguage: settings.detectSameLanguage }, () => run === current, pageRequests);
     // 停止或重启后这一轮已被丢弃，旧结果不能碰新队列和新占位符
     if (run !== current) return;
     placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
@@ -444,7 +448,7 @@ async function translateTitle(): Promise<void> {
   originalTitle = document.title;
   const currentGeneration = generation;
   try {
-    const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage, false, () => active && currentGeneration === generation, pageRequests);
+    const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage, { detectTargetLanguage: false }, () => active && currentGeneration === generation, pageRequests);
     // 网页在此期间自己改了标题就不再覆盖
     if (!active || currentGeneration !== generation || !translated || translated === title || document.title !== originalTitle) return;
     translatedTitle = `${translated} | ${originalTitle}`;
@@ -652,7 +656,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
   host.addEventListener("pointerdown", (event) => event.stopPropagation());
   positionSelectionHost(host, rect);
 
-  const translate = async (detectTargetLanguage = true): Promise<void> => {
+  const translate = async (options = { detectTargetLanguage: true }): Promise<void> => {
     const requestId = ++selectionRequest;
     selectionRequests.forEach((cancel) => cancel());
     selectionRequests.clear();
@@ -660,7 +664,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
     result.textContent = "正在理解这段文字";
     copyButton.disabled = true;
     try {
-      const [translation] = await requestTranslations([normalized], from.value, to.value, detectTargetLanguage, () => requestId === selectionRequest && host.isConnected, selectionRequests);
+      const [translation] = await requestTranslations([normalized], from.value, to.value, options, () => requestId === selectionRequest && host.isConnected, selectionRequests);
       if (requestId !== selectionRequest || !host.isConnected) return;
       if (translation === normalized) {
         closeSelection();
@@ -687,7 +691,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
   };
   from.addEventListener("change", changeLanguages);
   to.addEventListener("change", changeLanguages);
-  await translate(false);
+  await translate({ detectTargetLanguage: false });
 }
 
 function showSelectionButton(text: string, rect: DOMRect, point: { x: number; y: number }): void {
