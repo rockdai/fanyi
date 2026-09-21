@@ -29,6 +29,13 @@ interface Run {
 
 // 内容脚本会注入每个框架：顶层框架负责与扩展界面对话，子框架只管翻译自己的正文
 const topFrame = window === window.top;
+// 1x1 这类框架里的正文再宽也没人看得见，不该占用翻译请求
+const MIN_FRAME_WIDTH = 120;
+const MIN_FRAME_HEIGHT = 60;
+
+function readableFrame(): boolean {
+  return topFrame || (window.innerWidth >= MIN_FRAME_WIDTH && window.innerHeight >= MIN_FRAME_HEIGHT);
+}
 
 // 排除站点按用户看到的那个网站算，子框架要跟着顶层页面的主机名走
 function pageHostname(): string {
@@ -432,7 +439,7 @@ function translatePage(reset: boolean, scan = startScan()): Promise<PageStateRes
 }
 
 async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateResponse> {
-  if (!supported) return pageState();
+  if (!supported || !readableFrame()) return pageState();
   if (reset) removePageTranslations();
   const starting = reset || !active;
   // 每次启动都换一个代次，仍在等语言检测的更早启动会在检测返回后自行放弃
@@ -443,7 +450,8 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
     const skip = await alreadyInTargetLanguage(paragraphs.slice(0, 20));
     if (currentGeneration !== generation) return pageState();
     if (skip) {
-      showNotice("页面语言与目标语言相同，无需翻译");
+      // 正文可能在框架里，顶层自己不需要翻译不代表整页不需要
+      if (!window.frames.length) showNotice("页面语言与目标语言相同，无需翻译");
       return pageState();
     }
   }
@@ -509,9 +517,11 @@ async function togglePage(): Promise<PageStateResponse> {
     stopTranslation();
     return pageState();
   }
-  const state = await translatePage(false);
-  // 页面语言与目标语言相同而没开始翻译时不打开全局开关
-  if (state.active) settings = await saveSettings({ pageTranslationEnabled: true });
+  // 先启动再写开关：translatePage 会同步登记 startup，本框架不会被存储回调重复启动
+  // 顶层自己可能因为语言相同而不翻译，但正文可能在框架里，开关仍然要打开
+  const running = translatePage(false);
+  settings = await saveSettings({ pageTranslationEnabled: true });
+  await running;
   return pageState();
 }
 
@@ -747,7 +757,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       return;
     }
     // 顶层框架由弹窗直接发消息重启，子框架只能从存储得知语言或服务变了
-    if (!topFrame && pageTranslationOn() && (changes.sourceLanguage || changes.targetLanguage || changes.provider)) {
+    // 之前因语言相同而跳过的框架也要重新评估，否则换了目标语言必须刷新才翻译
+    if (!topFrame && settings.pageTranslationEnabled && (changes.sourceLanguage || changes.targetLanguage || changes.provider)) {
       void translatePage(true);
       return;
     }
@@ -757,6 +768,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     if (!settings.pageTranslationEnabled && pageTranslationOn()) stopTranslation();
   });
 });
+
+// 折叠或懒加载的框架撑开后才具备阅读尺寸，此时再按开关补上翻译
+if (!topFrame) {
+  window.addEventListener("resize", () => {
+    if (supported && settings.pageTranslationEnabled && !pageTranslationOn() && readableFrame()) void translatePage(false);
+  });
+}
 
 void getSettings().then((initialSettings) => {
   settings = initialSettings;
