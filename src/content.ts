@@ -352,15 +352,19 @@ function matchesTarget(language: string, declared: string, text: string): boolea
   return isSameLanguage(refineLanguage(language, declared, text), settings.targetLanguage);
 }
 
-// 占比精度不足以判定时才逐段复核，找到一段实质外语就停，正常启动不会多跑这些检测
-// 太短的段落检测会自己报不可靠，零星词汇因此不会被当成外语正文
-async function hasForeignParagraph(paragraphs: Paragraph[], declared: string): Promise<boolean> {
+// 占比精度不足以判定时才逐段复核：每一段都确认是目标语言才允许拒译，确认不了就当作有外语
+// 不看 isReliable：Chromium 对不足 50 字节的输入一律标记为不可靠，会把刚过门槛的外语段落漏掉
+async function everyParagraphInTarget(paragraphs: Paragraph[], declared: string): Promise<boolean> {
   for (const { text } of paragraphs) {
-    const { isReliable, languages } = await chrome.i18n.detectLanguage(text);
-    const [best] = languages.filter(({ language }) => language && language !== "und");
-    if (isReliable && best && !matchesTarget(best.language, declared, text)) return true;
+    const bytes = encoder.encode(text).length;
+    // 比门槛还短的段落装不下够分量的外语，不必再检测
+    if (bytes < MIN_LANGUAGE_BYTES) continue;
+    const { languages } = await chrome.i18n.detectLanguage(text);
+    const found = languages.filter(({ language }) => language && language !== "und");
+    // 一段里也可能混着多种语言，只要有一种不是目标语言且可能过门槛，这一段就不算确认
+    if (found.length === 0 || found.some(({ language, percentage }) => !matchesTarget(language, declared, text) && ((percentage + 1) / 100) * bytes >= MIN_LANGUAGE_BYTES)) return false;
   }
-  return false;
+  return true;
 }
 
 // <html lang> 往往只是界面语言，邮箱一类应用的正文与它不是一种语言，所以按将要翻译的正文判断
@@ -381,7 +385,7 @@ async function alreadyInTargetLanguage(paragraphs: Paragraph[]): Promise<boolean
   // 占比按字节统计且向下取整：下界过门槛就是实质外语，上界不到门槛才能断定是零星词汇，中间只能逐段复核
   if (foreign.some(({ percentage }) => (percentage / 100) * bytes >= MIN_LANGUAGE_BYTES)) return false;
   if (!foreign.some(({ percentage }) => ((percentage + 1) / 100) * bytes >= MIN_LANGUAGE_BYTES)) return true;
-  return !(await hasForeignParagraph(paragraphs, declared));
+  return everyParagraphInTarget(paragraphs, declared);
 }
 
 async function translateTitle(): Promise<void> {

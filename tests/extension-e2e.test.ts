@@ -66,6 +66,11 @@ const UNLISTED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8
 // 中文足够长时检测会把这段英文的占比截断为 0%，那时占比已经判不出它有多长
 const SAME_ENGLISH = "Read this message carefully. Review the report and send your comments before Friday.";
 const englishBeside = (chinese: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>报告</title></head><body><p id="beside-cn">${chinese}</p><p id="beside-en">${SAME_ENGLISH}</p></body></html>`;
+// 同样的文字挤在一个段落里：段内检测同样只把英文报成 0%
+const ONE_PARAGRAPH = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>报告</title></head><body><p id="one-para">${SAME_ENGLISH} ${LONG_CHINESE.repeat(2).slice(0, 3108)}</p></body></html>`;
+// 47 字节英文：超过门槛，但 Chromium 对不足 50 字节的输入一律标记为不可靠
+const SHORT_ENGLISH = "Please read the report and reply before Friday.";
+const SHORT_ENGLISH_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>报告</title></head><body><p id="short-en">${SHORT_ENGLISH}</p><p id="short-cn">${LONG_CHINESE.repeat(2).slice(0, 3108)}</p></body></html>`;
 const longPage = (english: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>长文</title></head><body><p id="long-cn">${LONG_CHINESE}</p><p id="long-en">${english}</p></body></html>`;
 // 以中文为主但仍有整段英文：检测会同时报出两种语言，英文那段正是要翻译的
 const MIXED_CHINESE = "这是一段中文说明，用来占据页面的大部分篇幅。";
@@ -127,7 +132,7 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)) };
+    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)), "/one-para": ONE_PARAGRAPH, "/short-en": SHORT_ENGLISH_PAGE };
     response.end(pages[request.url ?? ""] ?? ARTICLE);
   });
   return new Promise((resolve) => {
@@ -418,6 +423,29 @@ describe("the built extension in Chrome", () => {
       await askActiveTab("TOGGLE_PAGE");
       await beside.close();
     }
+    await page.bringToFront();
+  }, 30000);
+
+  it("still translates when the foreign text shares a paragraph or is only just long enough", async () => {
+    // 英文和中文挤在同一段里，段内检测把英文报成 0%，不能因此认定整段已是中文
+    const single = await context.newPage();
+    await single.goto(`${origin}/one-para`);
+    await single.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await single.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
+    expect(await single.evaluate(() => document.querySelector("#one-para .fanyi-translation, #one-para + .fanyi-translation")?.textContent ?? "")).toContain("译文");
+    await askActiveTab("TOGGLE_PAGE");
+    await single.close();
+
+    // 47 字节的英文段落刚过门槛，检测却因为不足 50 字节被标为不可靠
+    const short = await context.newPage();
+    await short.goto(`${origin}/short-en`);
+    await short.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await short.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+    expect(await short.evaluate(() => document.querySelector("#short-en .fanyi-translation, #short-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${SHORT_ENGLISH}`);
+    await askActiveTab("TOGGLE_PAGE");
+    await short.close();
     await page.bringToFront();
   }, 30000);
 
