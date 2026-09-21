@@ -333,9 +333,11 @@ function finishRun(current: Run): void {
 
 async function pageLanguage(sample: string): Promise<string> {
   if (settings.sourceLanguage !== "auto") return settings.sourceLanguage;
-  if (document.documentElement.lang) return document.documentElement.lang;
-  const detected = await chrome.i18n.detectLanguage(sample);
-  return detected.languages[0]?.language ?? "";
+  const { isReliable, languages } = await chrome.i18n.detectLanguage(sample);
+  const [best] = languages.filter(({ language }) => language && language !== "und");
+  // <html lang> 往往只是界面语言，邮箱一类应用的正文与它不是一种语言，所以先按将要翻译的正文判断
+  if (isReliable && best) return best.language;
+  return document.documentElement.lang || best?.language || "";
 }
 
 async function translateTitle(): Promise<void> {

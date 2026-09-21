@@ -49,6 +49,8 @@ const ARTICLE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><tit
 </body></html>`;
 
 const CHINESE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>中文页面</title></head><body><p id="cn">这是一段已经是中文的正文。</p></body></html>`;
+// 邮箱一类 Web 应用把界面语言写在 <html lang> 上，正文却是另一种语言
+const CHINESE_SHELL = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>收件箱</title></head><body><nav><a href="#">收件箱</a></nav><p id="mail-lead">${LEAD}</p><p id="mail-body">${BODY}</p><p id="mail-inner">${INNER}</p></body></html>`;
 
 interface DomNode {
   nodeType: number;
@@ -102,7 +104,7 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    response.end(request.url === "/zh" ? CHINESE : ARTICLE);
+    response.end(request.url === "/zh" ? CHINESE : request.url === "/zh-shell" ? CHINESE_SHELL : ARTICLE);
   });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -274,6 +276,21 @@ describe("the built extension in Chrome", () => {
     expect(await chinese.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
     expect(googleRequests.length).toBe(requestsBefore);
     await chinese.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("translates a page whose interface language is the target language but whose text is not", async () => {
+    const mailbox = await context.newPage();
+    await mailbox.goto(`${origin}/zh-shell`);
+    await mailbox.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await mailbox.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 3, undefined, { timeout: 15000 });
+    const translations = await mailbox.evaluate(() => ["mail-lead", "mail-body", "mail-inner"].map((id) => document.querySelector(`#${id} .fanyi-translation, #${id} + .fanyi-translation`)?.textContent ?? null));
+    expect(translations).toEqual([`译文 ${LEAD}`, `译文 ${BODY}`, `译文 ${INNER}`]);
+    expect(await mailbox.evaluate(() => Boolean(document.querySelector(".fanyi-notice")))).toBe(false);
+
+    await askActiveTab("TOGGLE_PAGE");
+    await mailbox.close();
     await page.bringToFront();
   }, 30000);
 

@@ -60,7 +60,7 @@ const FIXTURE = `
       detectLanguage: async () => {
         if (window.__detectDelay) await new Promise((resolve) => setTimeout(resolve, window.__detectDelay));
         if (window.__holdDetect) await new Promise((resolve) => window.__detections.push(resolve));
-        return { isReliable: true, languages: [{ language: window.__detected ?? "en", percentage: 92 }] };
+        return { isReliable: window.__detectReliable ?? true, languages: [{ language: window.__detected ?? "en", percentage: 92 }] };
       },
     },
     storage: {
@@ -684,6 +684,27 @@ describe("translation settings in a real page", () => {
     await page.evaluate("__toggle()");
     await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
     await page.evaluate("window.scrollTo(0, 0); __updateSettings({ maxParagraphsPerRequest: 4, eagerCharacters: 4999, translateTitle: true })");
+  });
+});
+
+describe("page language", () => {
+  it("judges by the text it is about to translate, not by the language the page declares", async () => {
+    const fresh = await openPage('{ sourceLanguage: "auto", targetLanguage: "zh-CN" }');
+    // 邮箱一类应用把界面语言写在 <html lang> 上，正文却是另一种语言
+    await fresh.evaluate("document.documentElement.lang = 'zh-CN'; window.__detected = 'en'; __toggle()");
+    await fresh.waitForFunction(() => document.querySelector(".fanyi-translation") && !document.querySelector(".fanyi-translation[data-loading]"));
+    expect(await fresh.evaluate("__state()")).toMatchObject({ active: true });
+    expect(await fresh.evaluate("Boolean(document.querySelector('.fanyi-notice'))")).toBe(false);
+    await fresh.close();
+  });
+
+  it("falls back to the declared language when the text is too little to tell", async () => {
+    const fresh = await openPage('{ sourceLanguage: "auto", targetLanguage: "zh-CN" }');
+    await fresh.evaluate("document.documentElement.lang = 'zh-CN'; window.__detected = 'en'; window.__detectReliable = false; __toggle()");
+    await fresh.waitForFunction("document.querySelector('.fanyi-notice')");
+    expect(await fresh.evaluate("document.querySelector('.fanyi-notice').textContent")).toBe("页面语言与目标语言相同，无需翻译");
+    expect(await fresh.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
+    await fresh.close();
   });
 });
 
