@@ -49,6 +49,15 @@ const ARTICLE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><tit
 </body></html>`;
 
 const CHINESE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>中文页面</title></head><body><p id="cn">这是一段已经是中文的正文。</p></body></html>`;
+// 繁体正文：语言检测只会给出笼统的 zh，简繁之分只存在于页面声明里
+const TRADITIONAL_LEAD = "閱讀不同語言的文章能夠幫助我們理解世界的另一面。";
+const TRADITIONAL_BODY = "良好的翻譯應該保留原文的含義，同時讓讀者感覺不到轉換的痕跡，這需要譯者對兩種語言都有足夠的體會。";
+const TRADITIONAL = `<!doctype html><html lang="zh-TW"><head><meta charset="utf-8"><title>繁體頁面</title></head><body><p id="tw-lead">${TRADITIONAL_LEAD}</p><p id="tw-body">${TRADITIONAL_BODY}</p></body></html>`;
+// 以中文为主但仍有整段英文：检测会同时报出两种语言，英文那段正是要翻译的
+const MIXED_CHINESE = "这是一段中文说明，用来占据页面的大部分篇幅。";
+const MIXED_CHINESE_MORE = "良好的翻译应该保留原文的含义，同时让读者感觉不到转换的痕迹，这需要译者对两种语言都有足够的体会。";
+const MIXED_ENGLISH = "The report argues that automation will reshape entry level work across many industries, and that companies should invest in retraining long before the pressure becomes visible in hiring numbers.";
+const MIXED = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>混合页面</title></head><body><p id="mixed-cn">${MIXED_CHINESE}</p><p id="mixed-cn2">${MIXED_CHINESE_MORE}</p><p id="mixed-en">${MIXED_ENGLISH}</p></body></html>`;
 // 邮箱一类 Web 应用把界面语言写在 <html lang> 上，正文却是另一种语言
 const CHINESE_SHELL = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>收件箱</title></head><body><nav><a href="#">收件箱</a></nav><p id="mail-lead">${LEAD}</p><p id="mail-body">${BODY}</p><p id="mail-inner">${INNER}</p></body></html>`;
 
@@ -104,7 +113,8 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    response.end(request.url === "/zh" ? CHINESE : request.url === "/zh-shell" ? CHINESE_SHELL : ARTICLE);
+    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED };
+    response.end(pages[request.url ?? ""] ?? ARTICLE);
   });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -291,6 +301,46 @@ describe("the built extension in Chrome", () => {
 
     await askActiveTab("TOGGLE_PAGE");
     await mailbox.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("keeps simplified and traditional Chinese apart although the detector only reports Chinese", async () => {
+    const traditional = await context.newPage();
+    await traditional.goto(`${origin}/zh-tw`);
+    await traditional.bringToFront();
+    // 检测只说“中文”，繁体正文翻成简体这件事仍然要做
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await traditional.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+    expect(await traditional.evaluate(() => document.querySelector("#tw-lead .fanyi-translation, #tw-lead + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${TRADITIONAL_LEAD}`);
+    await askActiveTab("TOGGLE_PAGE");
+    await traditional.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
+
+    // 目标语言换成繁体后，同一页就该被判为无需翻译
+    const options = await openOptions("general");
+    await options.selectOption("#options-target-language", "zh-TW");
+    await traditional.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: false, translatedCount: 0 });
+    await traditional.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
+    expect(await traditional.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+
+    await options.bringToFront();
+    await options.selectOption("#options-target-language", "zh-CN");
+    await options.close();
+    await traditional.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("translates a page that is mostly in the target language but still carries a foreign paragraph", async () => {
+    const mixed = await context.newPage();
+    await mixed.goto(`${origin}/mixed`);
+    await mixed.bringToFront();
+    // 检测把中文排在第一位，但英文那段仍然要翻译，不能整页拒绝
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await mixed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 3, undefined, { timeout: 15000 });
+    expect(await mixed.evaluate(() => document.querySelector("#mixed-en .fanyi-translation, #mixed-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${MIXED_ENGLISH}`);
+    expect(await mixed.evaluate(() => Boolean(document.querySelector(".fanyi-notice")))).toBe(false);
+    await askActiveTab("TOGGLE_PAGE");
+    await mixed.close();
     await page.bringToFront();
   }, 30000);
 

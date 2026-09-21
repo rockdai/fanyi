@@ -6,6 +6,8 @@ const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, t
 const TEXT_SELECTOR = "div, span, a, dt, label, summary, small, strong, em, b, i";
 const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
 const MAX_PAGE_BLOCKS = 1000;
+// 语言检测里占比低于此值的当作噪声，几个外来词不该让整页重新翻译
+const MIN_LANGUAGE_SHARE = 10;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_CONCURRENT_BATCHES = 3;
 const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
@@ -331,13 +333,20 @@ function finishRun(current: Run): void {
   notifyState();
 }
 
-async function pageLanguage(sample: string): Promise<string> {
-  if (settings.sourceLanguage !== "auto") return settings.sourceLanguage;
+function primarySubtag(code: string): string {
+  return code.trim().toLowerCase().split(/[-_]/)[0];
+}
+
+// <html lang> 往往只是界面语言，邮箱一类应用的正文与它不是一种语言，所以按将要翻译的正文判断
+async function sampleLanguages(sample: string): Promise<string[]> {
+  if (settings.sourceLanguage !== "auto") return [settings.sourceLanguage];
+  const declared = document.documentElement.lang;
   const { isReliable, languages } = await chrome.i18n.detectLanguage(sample);
-  const [best] = languages.filter(({ language }) => language && language !== "und");
-  // <html lang> 往往只是界面语言，邮箱一类应用的正文与它不是一种语言，所以先按将要翻译的正文判断
-  if (isReliable && best) return best.language;
-  return document.documentElement.lang || best?.language || "";
+  const detected = languages.filter(({ language, percentage }) => language && language !== "und" && percentage >= MIN_LANGUAGE_SHARE).map(({ language }) => language);
+  // 样本太短或页面没有可翻译正文时检测不可靠，只能退回页面自己声明的语言
+  if (!isReliable || detected.length === 0) return declared ? [declared] : detected;
+  // 检测分不出中文的简繁，声明的语言与检测结果同属一种语言时用更精确的声明值
+  return detected.map((language) => (primarySubtag(declared) === primarySubtag(language) ? declared : language));
 }
 
 async function translateTitle(): Promise<void> {
@@ -375,9 +384,10 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
   const paragraphs = collectParagraphs(scan);
   if (starting && settings.detectSameLanguage) {
     const sample = paragraphs.slice(0, 20).map(({ text }) => text).join(" ");
-    const language = await pageLanguage(sample);
+    const languages = await sampleLanguages(sample);
     if (currentGeneration !== generation) return pageState();
-    if (isSameLanguage(language, settings.targetLanguage)) {
+    // 样本里还有别的语言就有东西要翻译，全部命中目标语言才拒绝
+    if (languages.length > 0 && languages.every((language) => isSameLanguage(language, settings.targetLanguage))) {
       showNotice("页面语言与目标语言相同，无需翻译");
       return pageState();
     }
