@@ -486,6 +486,9 @@ describe("translation settings in a real page", () => {
     await page.waitForFunction(() => document.querySelector(".fanyi-notice"));
     expect(await page.evaluate("document.querySelector('.fanyi-notice').textContent")).toBe("页面语言与目标语言相同，无需翻译");
     expect(await page.evaluate("__state()")).toMatchObject({ active: false, translatedCount: 0 });
+    // 点「翻译」即使本页不需要翻译也会打开全局开关，正文可能在框架里；这里先关掉再继续
+    expect(await page.evaluate("__state()")).toMatchObject({ enabled: true });
+    await page.evaluate("__toggle()");
 
     await page.evaluate("__updateSettings({ detectSameLanguage: false })");
     await page.evaluate("__toggle()");

@@ -77,6 +77,20 @@ const MIXED_CHINESE = "这是一段中文说明，用来占据页面的大部分
 const MIXED_CHINESE_MORE = "良好的翻译应该保留原文的含义，同时让读者感觉不到转换的痕迹，这需要译者对两种语言都有足够的体会。";
 const MIXED_ENGLISH = "The report argues that automation will reshape entry level work across many industries, and that companies should invest in retraining long before the pressure becomes visible in hiring numbers.";
 const MIXED = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>混合页面</title></head><body><p id="mixed-cn">${MIXED_CHINESE}</p><p id="mixed-cn2">${MIXED_CHINESE_MORE}</p><p id="mixed-en">${MIXED_ENGLISH}</p></body></html>`;
+// 框架里的正文：同源、跨源（另一个主机名）和 srcdoc 三种形态
+const FRAMED_TEXT = "Every translation is a small act of interpretation.";
+const FRAME_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><p id="inner">${FRAMED_TEXT}</p></body></html>`;
+const framesPage = (crossOrigin: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Frames</title></head><body><p id="lead">${LEAD}</p><p id="second">${BODY}</p><iframe id="same" src="/frame" style="width:600px;height:120px;border:0"></iframe><iframe id="cross" src="${crossOrigin}/frame" style="width:600px;height:120px;border:0"></iframe><iframe id="doc" srcdoc="<p id='inner'>${FRAMED_TEXT}</p>" style="width:600px;height:120px;border:0"></iframe></body></html>`;
+// 中文界面里嵌一个英文正文的框架：顶层自己不需要翻译，整页却需要
+const CHINESE_SHELL_FRAMED = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>收件箱</title></head><body><p id="shell">这是一封邮件的中文界面文字，用来占据顶层页面的正文。</p><iframe id="mail" src="/frame" style="width:700px;height:300px;border:0"></iframe></body></html>`;
+// 英文顶层里嵌一个中文框架：换目标语言后这个框架也要重新评估
+const CHINESE_FRAME = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body><p id="inner">这是一段已经是中文的正文，用来测试框架的语言判断。</p></body></html>`;
+const ENGLISH_WITH_CHINESE_FRAME = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Mixed</title></head><body><p id="lead">${LEAD}</p><iframe id="cn" src="/cn-frame" style="width:700px;height:300px;border:0"></iframe></body></html>`;
+// 可折叠的框架：折叠期间改目标语言，展开后要按新设置重译
+const COLLAPSIBLE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Collapsible</title></head><body><p id="lead">${LEAD}</p><iframe id="box" src="/frame" style="width:700px;height:300px;border:0"></iframe></body></html>`;
+// 1x1 框架里放定宽正文：框架本身看不见，不该触发翻译请求
+const TINY_FRAMES = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Tiny</title></head><body><p id="lead">${LEAD}</p>${Array.from({ length: 5 }, (_, index) => `<iframe src="/wide?${index}" style="width:1px;height:1px;border:0"></iframe>`).join("")}</body></html>`;
+const WIDE_IN_TINY = `<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><p id="inner" style="width:600px">Reading in another language can help us understand the world around us.</p></body></html>`;
 // 邮箱一类 Web 应用把界面语言写在 <html lang> 上，正文却是另一种语言
 const CHINESE_SHELL = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>收件箱</title></head><body><nav><a href="#">收件箱</a></nav><p id="mail-lead">${LEAD}</p><p id="mail-body">${BODY}</p><p id="mail-inner">${INNER}</p></body></html>`;
 
@@ -96,6 +110,9 @@ interface AiRequest {
 
 let server: http.Server;
 let origin: string;
+// 第二个服务器只为提供另一个主机名，用来验证跨源框架
+let otherServer: http.Server;
+let otherOrigin: string;
 let context: BrowserContext;
 let worker: Worker;
 let page: Page;
@@ -132,17 +149,35 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)), "/one-para": ONE_PARAGRAPH, "/short-en": SHORT_ENGLISH_PAGE };
+    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)), "/one-para": ONE_PARAGRAPH, "/short-en": SHORT_ENGLISH_PAGE, "/frame": FRAME_PAGE, "/frames": framesPage(otherOrigin), "/shell-frame": CHINESE_SHELL_FRAMED, "/cn-frame": CHINESE_FRAME, "/en-cn-frame": ENGLISH_WITH_CHINESE_FRAME, "/tiny-frames": TINY_FRAMES, "/collapsible": COLLAPSIBLE };
+    if (request.url?.startsWith("/wide")) {
+      response.end(WIDE_IN_TINY);
+      return;
+    }
     response.end(pages[request.url ?? ""] ?? ARTICLE);
   });
+  otherServer = http.createServer((_request, response) => {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(FRAME_PAGE);
+  });
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("server did not bind to a port");
-      origin = `http://127.0.0.1:${address.port}`;
-      resolve();
+    otherServer.listen(0, "localhost", () => {
+      const other = otherServer.address();
+      if (!other || typeof other === "string") throw new Error("second server did not bind to a port");
+      otherOrigin = `http://localhost:${other.port}`;
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("server did not bind to a port");
+        origin = `http://127.0.0.1:${address.port}`;
+        resolve();
+      });
     });
   });
+}
+
+// 主框架排在第一位，其后依次是同源、跨源和 srcdoc 三个框架
+function framedTranslations(target: Page): Promise<(string | null)[]> {
+  return Promise.all(target.frames().slice(1).map((frame) => frame.evaluate(() => document.querySelector("#inner .fanyi-translation, #inner + .fanyi-translation")?.textContent ?? null).catch(() => null)));
 }
 
 // 快捷键和右键菜单都是后台向当前标签页发这条消息，测试从同一位置发起
@@ -239,8 +274,12 @@ beforeAll(async () => {
     const request = route.request();
     const texts = new URLSearchParams(request.postData() ?? "").getAll("q");
     googleRequests.push(texts);
-    const auto = new URL(request.url()).searchParams.get("sl") === "auto";
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(texts.map((text) => (auto ? [`译文 ${text}`, "en"] : `译文 ${text}`))) });
+    const query = new URL(request.url()).searchParams;
+    const auto = query.get("sl") === "auto";
+    // 默认目标简体中文时保持「译文」，其余目标带上语言代码，便于验证重译确实用了新设置
+    const target = query.get("tl");
+    const mark = (text: string): string => (target === "zh-CN" ? `译文 ${text}` : `${target} 译文 ${text}`);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(texts.map((text) => (auto ? [mark(text), "en"] : mark(text)))) });
   });
   page = await context.newPage();
   await page.goto(`${origin}/article`);
@@ -249,6 +288,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await context?.close();
   server?.close();
+  otherServer?.close();
 });
 
 describe("the built extension in Chrome", () => {
@@ -304,8 +344,11 @@ describe("the built extension in Chrome", () => {
     await chinese.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
     expect(await chinese.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
     expect(googleRequests.length).toBe(requestsBefore);
+    // 点「翻译」即使本页不需要翻译也会打开全局开关，正文可能在框架里；这里先关掉再继续
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: false });
     await chinese.close();
     await page.bringToFront();
+    await page.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
   }, 30000);
 
   it("translates a page whose interface language is the target language but whose text is not", async () => {
@@ -341,6 +384,8 @@ describe("the built extension in Chrome", () => {
     expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: false, translatedCount: 0 });
     await traditional.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
     expect(await traditional.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    // 本页不需要翻译也会打开全局开关，关掉再收尾
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: false });
 
     await options.bringToFront();
     await options.selectOption("#options-target-language", "zh-CN");
@@ -394,6 +439,8 @@ describe("the built extension in Chrome", () => {
     expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: false, translatedCount: 0 });
     await faint.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
     expect(await faint.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    // 本页不需要翻译也会打开全局开关，关掉再收尾
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ enabled: false });
     await faint.close();
     await page.bringToFront();
   }, 30000);
@@ -446,6 +493,124 @@ describe("the built extension in Chrome", () => {
     expect(await short.evaluate(() => document.querySelector("#short-en .fanyi-translation, #short-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${SHORT_ENGLISH}`);
     await askActiveTab("TOGGLE_PAGE");
     await short.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("translates the text inside frames and lets the page's site rules reach them", async () => {
+    const framed = await context.newPage();
+    await framed.goto(`${origin}/frames`);
+    await framed.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await framed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+    // 顶层页面有两段、每个框架各一段：页面状态必须来自顶层框架，而不是先应答的那个框架
+    expect(await askActiveTab("GET_PAGE_STATE")).toMatchObject({ active: true, translatedCount: 2 });
+    // 同源、跨源和 srcdoc 三个框架的正文都要翻译
+    await expect.poll(() => framedTranslations(framed), { timeout: 15000 }).toEqual([`译文 ${FRAMED_TEXT}`, `译文 ${FRAMED_TEXT}`, `译文 ${FRAMED_TEXT}`]);
+
+    // 排除的是顶层页面的站点，另一个主机上的框架也要跟着恢复原文
+    const options = await openOptions("sites");
+    await setOption(options, "#excluded-sites", "127.0.0.1");
+    await framed.bringToFront();
+    await expect.poll(() => framedTranslations(framed)).toEqual([null, null, null]);
+    expect(await framed.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+
+    await options.bringToFront();
+    await setOption(options, "#excluded-sites", "");
+    await options.close();
+    await framed.bringToFront();
+    await expect.poll(async () => (await askActiveTab("GET_PAGE_STATE")).supported).toBe(true);
+    await expect.poll(async () => (await askActiveTab("TOGGLE_PAGE")).enabled).toBe(false);
+    await expect.poll(() => framedTranslations(framed)).toEqual([null, null, null]);
+    await framed.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("starts frame translation from the popup although the top document needs none", async () => {
+    const mailbox = await context.newPage();
+    await mailbox.goto(`${origin}/shell-frame`);
+    await mailbox.bringToFront();
+    const popup = await openPopup();
+    expect(await popup.textContent("#translate-page")).toBe("翻译");
+    await popup.click("#translate-page");
+    // 顶层是中文界面，自己不需要翻译，但邮件正文在框架里
+    await expect.poll(() => framedTranslations(mailbox), { timeout: 15000 }).toEqual([`译文 ${FRAMED_TEXT}`]);
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("显示原文");
+    expect(await mailbox.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    // 顶层不需要翻译时不能替整页下结论
+    expect(await mailbox.evaluate(() => Boolean(document.querySelector(".fanyi-notice")))).toBe(false);
+
+    await popup.click("#translate-page");
+    await expect.poll(() => framedTranslations(mailbox)).toEqual([null]);
+    await popup.close();
+    await mailbox.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("re-evaluates a frame that needed no translation when the popup picks another target language", async () => {
+    const mixed = await context.newPage();
+    await mixed.goto(`${origin}/en-cn-frame`);
+    await mixed.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await mixed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
+    // 框架已经是简体中文，先按目标语言跳过
+    expect(await framedTranslations(mixed)).toEqual([null]);
+
+    const popup = await openPopup();
+    await popup.selectOption("#target-language", "en");
+    // 换成英语后这个框架不用刷新就该翻译
+    await expect.poll(() => framedTranslations(mixed), { timeout: 15000 }).toEqual(["en 译文 这是一段已经是中文的正文，用来测试框架的语言判断。"]);
+
+    await popup.selectOption("#target-language", "zh-CN");
+    await popup.click("#translate-page");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    await popup.close();
+    await mixed.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("leaves frames too small to read out of the first requests", async () => {
+    const requestsBefore = googleRequests.length;
+    const tiny = await context.newPage();
+    await tiny.goto(`${origin}/tiny-frames`);
+    await tiny.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await tiny.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
+    await tiny.waitForTimeout(1500);
+    // 五个 1x1 框架里的正文虽然定宽 600px，但框架本身不可阅读
+    expect(await framedTranslations(tiny)).toEqual([null, null, null, null, null]);
+    expect(googleRequests.length - requestsBefore).toBeLessThanOrEqual(2);
+    await askActiveTab("TOGGLE_PAGE");
+    await tiny.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("re-translates a frame that was collapsed while the target language changed", async () => {
+    const collapsible = await context.newPage();
+    await collapsible.goto(`${origin}/collapsible`);
+    await collapsible.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await expect.poll(() => framedTranslations(collapsible), { timeout: 15000 }).toEqual([`译文 ${FRAMED_TEXT}`]);
+
+    // 折叠成 1x1 后改目标语言，再展开回原尺寸
+    await collapsible.evaluate(() => {
+      const frame = document.querySelector<HTMLIFrameElement>("#box");
+      if (frame) frame.style.cssText = "width:1px;height:1px;border:0";
+    });
+    const popup = await openPopup();
+    await popup.selectOption("#target-language", "ja");
+    await collapsible.bringToFront();
+    await collapsible.evaluate(() => {
+      const frame = document.querySelector<HTMLIFrameElement>("#box");
+      if (frame) frame.style.cssText = "width:700px;height:300px;border:0";
+    });
+    // 展开后必须按新的目标语言重译，而不是留着旧译文
+    await expect.poll(() => framedTranslations(collapsible), { timeout: 15000 }).toEqual([`ja 译文 ${FRAMED_TEXT}`]);
+
+    await popup.selectOption("#target-language", "zh-CN");
+    await popup.click("#translate-page");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    await popup.close();
+    await collapsible.close();
     await page.bringToFront();
   }, 30000);
 
@@ -552,7 +717,7 @@ describe("the built extension in Chrome", () => {
     // 全局开关开着，换一种目标语言后这一页不用刷新就该有译文
     await popup.selectOption("#target-language", "en");
     await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
-    expect(await chinese.evaluate(() => document.querySelector("#cn .fanyi-translation, #cn + .fanyi-translation")?.textContent ?? null)).toBe("译文 这是一段已经是中文的正文。");
+    expect(await chinese.evaluate(() => document.querySelector("#cn .fanyi-translation, #cn + .fanyi-translation")?.textContent ?? null)).toBe("en 译文 这是一段已经是中文的正文。");
 
     await popup.selectOption("#target-language", "zh-CN");
     await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);
