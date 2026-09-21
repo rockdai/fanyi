@@ -6,8 +6,8 @@ const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, t
 const TEXT_SELECTOR = "div, span, a, dt, label, summary, small, strong, em, b, i";
 const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
 const MAX_PAGE_BLOCKS = 1000;
-// 占比要换算成字符数再判断：一句话以上的外语正文就值得翻译，几个外来词不算
-const MIN_LANGUAGE_CHARACTERS = 40;
+// 检测给的占比按字节统计，换算时也要用字节数：一句话以上的外语正文就值得翻译，几个外来词不算
+const MIN_LANGUAGE_BYTES = 40;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_CONCURRENT_BATCHES = 3;
 const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
@@ -340,8 +340,9 @@ function primarySubtag(code: string): string {
 // 检测只给出语言，声明可能带着更精确的地区或脚本
 function refineLanguage(language: string, declared: string, sample: string): string {
   if (primarySubtag(declared) === primarySubtag(language)) return declared;
-  // 检测分不出中文简繁，声明又给不出时按正文里的简繁专用字判断；一个专用字都没有说明两种写法一样
-  if (primarySubtag(language) === "zh") return chineseScript(sample) ?? language;
+  // 检测分不出中文简繁，声明又给不出时按正文里的简繁专用字判断
+  // 字表只收常用字，判不出来就是脚本未知，此时不能当成与目标语言相同，宁可多翻一遍也别把繁体正文挡掉
+  if (primarySubtag(language) === "zh") return chineseScript(sample) ?? "";
   return language;
 }
 
@@ -351,9 +352,10 @@ async function sampleLanguages(sample: string): Promise<string[]> {
   const declared = document.documentElement.lang;
   const { isReliable, languages } = await chrome.i18n.detectLanguage(sample);
   const found = languages.filter(({ language }) => language && language !== "und");
-  // 占比是相对全样本的，中文正文越长英文占比越小，所以换算成字符数再决定是不是零星外来词
+  // 占比是相对全样本的，中文正文越长英文占比越小；按字节还原出这段外语本身有多长，结果才与旁边有多少中文无关
+  const sampleBytes = new TextEncoder().encode(sample).length;
   const [main, ...rest] = found;
-  const detected = main ? [main, ...rest.filter(({ percentage }) => (percentage / 100) * sample.length >= MIN_LANGUAGE_CHARACTERS)] : [];
+  const detected = main ? [main, ...rest.filter(({ percentage }) => (percentage / 100) * sampleBytes >= MIN_LANGUAGE_BYTES)] : [];
   // 样本太短或页面没有可翻译正文时检测不可靠，只能退回页面自己声明的语言
   if (!isReliable || detected.length === 0) return declared ? [declared] : detected.map(({ language }) => language);
   return detected.map(({ language }) => refineLanguage(language, declared, sample));
