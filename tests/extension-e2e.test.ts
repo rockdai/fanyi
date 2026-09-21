@@ -86,6 +86,8 @@ const CHINESE_SHELL_FRAMED = `<!doctype html><html lang="zh-CN"><head><meta char
 // 英文顶层里嵌一个中文框架：换目标语言后这个框架也要重新评估
 const CHINESE_FRAME = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body><p id="inner">这是一段已经是中文的正文，用来测试框架的语言判断。</p></body></html>`;
 const ENGLISH_WITH_CHINESE_FRAME = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Mixed</title></head><body><p id="lead">${LEAD}</p><iframe id="cn" src="/cn-frame" style="width:700px;height:300px;border:0"></iframe></body></html>`;
+// 可折叠的框架：折叠期间改目标语言，展开后要按新设置重译
+const COLLAPSIBLE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Collapsible</title></head><body><p id="lead">${LEAD}</p><iframe id="box" src="/frame" style="width:700px;height:300px;border:0"></iframe></body></html>`;
 // 1x1 框架里放定宽正文：框架本身看不见，不该触发翻译请求
 const TINY_FRAMES = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Tiny</title></head><body><p id="lead">${LEAD}</p>${Array.from({ length: 5 }, (_, index) => `<iframe src="/wide?${index}" style="width:1px;height:1px;border:0"></iframe>`).join("")}</body></html>`;
 const WIDE_IN_TINY = `<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><p id="inner" style="width:600px">Reading in another language can help us understand the world around us.</p></body></html>`;
@@ -147,7 +149,7 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)), "/one-para": ONE_PARAGRAPH, "/short-en": SHORT_ENGLISH_PAGE, "/frame": FRAME_PAGE, "/frames": framesPage(otherOrigin), "/shell-frame": CHINESE_SHELL_FRAMED, "/cn-frame": CHINESE_FRAME, "/en-cn-frame": ENGLISH_WITH_CHINESE_FRAME, "/tiny-frames": TINY_FRAMES };
+    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)), "/one-para": ONE_PARAGRAPH, "/short-en": SHORT_ENGLISH_PAGE, "/frame": FRAME_PAGE, "/frames": framesPage(otherOrigin), "/shell-frame": CHINESE_SHELL_FRAMED, "/cn-frame": CHINESE_FRAME, "/en-cn-frame": ENGLISH_WITH_CHINESE_FRAME, "/tiny-frames": TINY_FRAMES, "/collapsible": COLLAPSIBLE };
     if (request.url?.startsWith("/wide")) {
       response.end(WIDE_IN_TINY);
       return;
@@ -272,8 +274,12 @@ beforeAll(async () => {
     const request = route.request();
     const texts = new URLSearchParams(request.postData() ?? "").getAll("q");
     googleRequests.push(texts);
-    const auto = new URL(request.url()).searchParams.get("sl") === "auto";
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(texts.map((text) => (auto ? [`译文 ${text}`, "en"] : `译文 ${text}`))) });
+    const query = new URL(request.url()).searchParams;
+    const auto = query.get("sl") === "auto";
+    // 默认目标简体中文时保持「译文」，其余目标带上语言代码，便于验证重译确实用了新设置
+    const target = query.get("tl");
+    const mark = (text: string): string => (target === "zh-CN" ? `译文 ${text}` : `${target} 译文 ${text}`);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(texts.map((text) => (auto ? [mark(text), "en"] : mark(text)))) });
   });
   page = await context.newPage();
   await page.goto(`${origin}/article`);
@@ -552,7 +558,7 @@ describe("the built extension in Chrome", () => {
     const popup = await openPopup();
     await popup.selectOption("#target-language", "en");
     // 换成英语后这个框架不用刷新就该翻译
-    await expect.poll(() => framedTranslations(mixed), { timeout: 15000 }).toEqual(["译文 这是一段已经是中文的正文，用来测试框架的语言判断。"]);
+    await expect.poll(() => framedTranslations(mixed), { timeout: 15000 }).toEqual(["en 译文 这是一段已经是中文的正文，用来测试框架的语言判断。"]);
 
     await popup.selectOption("#target-language", "zh-CN");
     await popup.click("#translate-page");
@@ -575,6 +581,36 @@ describe("the built extension in Chrome", () => {
     expect(googleRequests.length - requestsBefore).toBeLessThanOrEqual(2);
     await askActiveTab("TOGGLE_PAGE");
     await tiny.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("re-translates a frame that was collapsed while the target language changed", async () => {
+    const collapsible = await context.newPage();
+    await collapsible.goto(`${origin}/collapsible`);
+    await collapsible.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await expect.poll(() => framedTranslations(collapsible), { timeout: 15000 }).toEqual([`译文 ${FRAMED_TEXT}`]);
+
+    // 折叠成 1x1 后改目标语言，再展开回原尺寸
+    await collapsible.evaluate(() => {
+      const frame = document.querySelector<HTMLIFrameElement>("#box");
+      if (frame) frame.style.cssText = "width:1px;height:1px;border:0";
+    });
+    const popup = await openPopup();
+    await popup.selectOption("#target-language", "ja");
+    await collapsible.bringToFront();
+    await collapsible.evaluate(() => {
+      const frame = document.querySelector<HTMLIFrameElement>("#box");
+      if (frame) frame.style.cssText = "width:700px;height:300px;border:0";
+    });
+    // 展开后必须按新的目标语言重译，而不是留着旧译文
+    await expect.poll(() => framedTranslations(collapsible), { timeout: 15000 }).toEqual([`ja 译文 ${FRAMED_TEXT}`]);
+
+    await popup.selectOption("#target-language", "zh-CN");
+    await popup.click("#translate-page");
+    await expect.poll(() => popup.textContent("#translate-page")).toBe("翻译");
+    await popup.close();
+    await collapsible.close();
     await page.bringToFront();
   }, 30000);
 
@@ -681,7 +717,7 @@ describe("the built extension in Chrome", () => {
     // 全局开关开着，换一种目标语言后这一页不用刷新就该有译文
     await popup.selectOption("#target-language", "en");
     await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
-    expect(await chinese.evaluate(() => document.querySelector("#cn .fanyi-translation, #cn + .fanyi-translation")?.textContent ?? null)).toBe("译文 这是一段已经是中文的正文。");
+    expect(await chinese.evaluate(() => document.querySelector("#cn .fanyi-translation, #cn + .fanyi-translation")?.textContent ?? null)).toBe("en 译文 这是一段已经是中文的正文。");
 
     await popup.selectOption("#target-language", "zh-CN");
     await chinese.waitForFunction(() => document.querySelectorAll(".fanyi-translation").length === 0);

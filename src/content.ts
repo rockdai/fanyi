@@ -439,7 +439,12 @@ function translatePage(reset: boolean, scan = startScan()): Promise<PageStateRes
 }
 
 async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateResponse> {
-  if (!supported || !readableFrame()) return pageState();
+  if (!supported) return pageState();
+  // 框架小到读不了就不翻译；若是重启，先把旧译文和运行状态清掉，框架撑开后才会按最新设置重来
+  if (!readableFrame()) {
+    if (reset) stopTranslation();
+    return pageState();
+  }
   if (reset) removePageTranslations();
   const starting = reset || !active;
   // 每次启动都换一个代次，仍在等语言检测的更早启动会在检测返回后自行放弃
