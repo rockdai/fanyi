@@ -1,11 +1,13 @@
 import { TRANSLATE_PORT, type PageStateResponse, type RuntimeMessage, type TranslationResponse } from "./messages";
 import { batchSizeFor, breakSentences, leadingCount, splitText } from "./paragraphs";
-import { DEFAULT_SETTINGS, getSettings, isSameLanguage, isSiteExcluded, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type LanguageOption, type Settings } from "./settings";
+import { chineseScript, DEFAULT_SETTINGS, getSettings, isSameLanguage, isSiteExcluded, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type LanguageOption, type Settings } from "./settings";
 
 const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, td, th, dd";
 const TEXT_SELECTOR = "div, span, a, dt, label, summary, small, strong, em, b, i";
 const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
 const MAX_PAGE_BLOCKS = 1000;
+// 检测给的占比按字节统计，换算时也要用字节数：一句话以上的外语正文就值得翻译，几个外来词不算
+const MIN_LANGUAGE_BYTES = 40;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_CONCURRENT_BATCHES = 3;
 const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
@@ -331,11 +333,59 @@ function finishRun(current: Run): void {
   notifyState();
 }
 
-async function pageLanguage(sample: string): Promise<string> {
-  if (settings.sourceLanguage !== "auto") return settings.sourceLanguage;
-  if (document.documentElement.lang) return document.documentElement.lang;
-  const detected = await chrome.i18n.detectLanguage(sample);
-  return detected.languages[0]?.language ?? "";
+function primarySubtag(code: string): string {
+  return code.trim().toLowerCase().split(/[-_]/)[0];
+}
+
+// 检测只给出语言，声明可能带着更精确的地区或脚本
+function refineLanguage(language: string, declared: string, sample: string): string {
+  if (primarySubtag(declared) === primarySubtag(language)) return declared;
+  // 检测分不出中文简繁，声明又给不出时按正文里的简繁专用字判断
+  // 字表只收常用字，判不出来就是脚本未知，此时不能当成与目标语言相同，宁可多翻一遍也别把繁体正文挡掉
+  if (primarySubtag(language) === "zh") return chineseScript(sample) ?? "";
+  return language;
+}
+
+const encoder = new TextEncoder();
+
+function matchesTarget(language: string, declared: string, text: string): boolean {
+  return isSameLanguage(refineLanguage(language, declared, text), settings.targetLanguage);
+}
+
+// 占比精度不足以判定时才逐段复核：每一段都确认是目标语言才允许拒译，确认不了就当作有外语
+// 不看 isReliable：Chromium 对不足 50 字节的输入一律标记为不可靠，会把刚过门槛的外语段落漏掉
+async function everyParagraphInTarget(paragraphs: Paragraph[], declared: string): Promise<boolean> {
+  for (const { text } of paragraphs) {
+    const bytes = encoder.encode(text).length;
+    // 比门槛还短的段落装不下够分量的外语，不必再检测
+    if (bytes < MIN_LANGUAGE_BYTES) continue;
+    const { languages } = await chrome.i18n.detectLanguage(text);
+    const found = languages.filter(({ language }) => language && language !== "und");
+    // 一段里也可能混着多种语言，只要有一种不是目标语言且可能过门槛，这一段就不算确认
+    if (found.length === 0 || found.some(({ language, percentage }) => !matchesTarget(language, declared, text) && ((percentage + 1) / 100) * bytes >= MIN_LANGUAGE_BYTES)) return false;
+  }
+  return true;
+}
+
+// <html lang> 往往只是界面语言，邮箱一类应用的正文与它不是一种语言，所以按将要翻译的正文判断
+async function alreadyInTargetLanguage(paragraphs: Paragraph[]): Promise<boolean> {
+  if (settings.sourceLanguage !== "auto") return isSameLanguage(settings.sourceLanguage, settings.targetLanguage);
+  const sample = paragraphs.map(({ text }) => text).join(" ");
+  const declared = document.documentElement.lang;
+  const { isReliable, languages } = await chrome.i18n.detectLanguage(sample);
+  const [main, ...rest] = languages.filter(({ language }) => language && language !== "und");
+  // 样本太短或页面没有可翻译正文时检测不可靠，只能退回页面自己声明的语言
+  if (!isReliable || !main) {
+    if (declared) return isSameLanguage(declared, settings.targetLanguage);
+    return Boolean(main) && matchesTarget(main.language, declared, sample);
+  }
+  if (!matchesTarget(main.language, declared, sample)) return false;
+  const foreign = rest.filter(({ language }) => !matchesTarget(language, declared, sample));
+  const bytes = encoder.encode(sample).length;
+  // 占比按字节统计且向下取整：下界过门槛就是实质外语，上界不到门槛才能断定是零星词汇，中间只能逐段复核
+  if (foreign.some(({ percentage }) => (percentage / 100) * bytes >= MIN_LANGUAGE_BYTES)) return false;
+  if (!foreign.some(({ percentage }) => ((percentage + 1) / 100) * bytes >= MIN_LANGUAGE_BYTES)) return true;
+  return everyParagraphInTarget(paragraphs, declared);
 }
 
 async function translateTitle(): Promise<void> {
@@ -372,10 +422,9 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
   const currentGeneration = generation;
   const paragraphs = collectParagraphs(scan);
   if (starting && settings.detectSameLanguage) {
-    const sample = paragraphs.slice(0, 20).map(({ text }) => text).join(" ");
-    const language = await pageLanguage(sample);
+    const skip = await alreadyInTargetLanguage(paragraphs.slice(0, 20));
     if (currentGeneration !== generation) return pageState();
-    if (isSameLanguage(language, settings.targetLanguage)) {
+    if (skip) {
       showNotice("页面语言与目标语言相同，无需翻译");
       return pageState();
     }

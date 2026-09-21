@@ -126,6 +126,21 @@ export function isSiteExcluded(hostname: string, sites: string[]): boolean {
   });
 }
 
+// 语言检测只能给出笼统的 zh，用两种写法各自独有的常用字判断简繁
+const SIMPLIFIED_ONLY = "们这个说会时来国学对开关点为过发实应让经导产语译读觉电车马书见长门问间东华难风飞义习写号员图处广汉节乐两满农钱权认岁条网务现样业医银优远运战证转装资总讲论该还边变记设话谁请谢试识词军队联独";
+const TRADITIONAL_ONLY = "們這個說會時來國學對開關點為過發實應讓經導產語譯讀覺電車馬書見長門問間東華難風飛義習寫號員圖處廣漢節樂兩滿農錢權認歲條網務現樣業醫銀優遠運戰證轉裝資總講論該還邊變記設話誰請謝試識詞軍隊聯獨";
+
+export function chineseScript(text: string): string | undefined {
+  let simplified = 0;
+  let traditional = 0;
+  for (const character of text) {
+    if (SIMPLIFIED_ONLY.includes(character)) simplified += 1;
+    if (TRADITIONAL_ONLY.includes(character)) traditional += 1;
+  }
+  if (simplified === traditional) return undefined;
+  return simplified > traditional ? "zh-Hans" : "zh-Hant";
+}
+
 function languageKey(code: string): string {
   const [primary = "", ...rest] = code.trim().toLowerCase().split(/[-_]/);
   if (primary !== "zh") return primary;
