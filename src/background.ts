@@ -35,15 +35,18 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab?.id) return;
-  if (info.menuItemId === PAGE_MENU_ID) void chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PAGE" } satisfies RuntimeMessage).catch(() => undefined);
-  if (info.menuItemId === SELECTION_MENU_ID && info.selectionText) void chrome.tabs.sendMessage(tab.id, { type: "SHOW_SELECTION_TRANSLATION", text: info.selectionText } satisfies RuntimeMessage);
+  // 内容脚本在每个框架都有一份：开关只发给顶层框架，划词发给右键点中的那个框架
+  if (info.menuItemId === PAGE_MENU_ID) void chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PAGE" } satisfies RuntimeMessage, { frameId: 0 }).catch(() => undefined);
+  if (info.menuItemId === SELECTION_MENU_ID && info.selectionText) void chrome.tabs.sendMessage(tab.id, { type: "SHOW_SELECTION_TRANSLATION", text: info.selectionText } satisfies RuntimeMessage, { frameId: info.frameId ?? 0 });
 });
 
 chrome.commands.onCommand.addListener(async (command) => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
   const type = command === "toggle-page-translation" ? "TOGGLE_PAGE" : "TRANSLATE_CURRENT_SELECTION";
-  await chrome.tabs.sendMessage(tab.id, { type } satisfies RuntimeMessage).catch(() => undefined);
+  // 翻译选中文本要广播：选区在哪个框架只有该框架自己知道
+  const options = type === "TOGGLE_PAGE" ? { frameId: 0 } : {};
+  await chrome.tabs.sendMessage(tab.id, { type } satisfies RuntimeMessage, options).catch(() => undefined);
 });
 
 async function translate(message: TranslateTextsMessage | TestProviderMessage, signal?: AbortSignal): Promise<TranslationResponse> {

@@ -77,6 +77,10 @@ const MIXED_CHINESE = "这是一段中文说明，用来占据页面的大部分
 const MIXED_CHINESE_MORE = "良好的翻译应该保留原文的含义，同时让读者感觉不到转换的痕迹，这需要译者对两种语言都有足够的体会。";
 const MIXED_ENGLISH = "The report argues that automation will reshape entry level work across many industries, and that companies should invest in retraining long before the pressure becomes visible in hiring numbers.";
 const MIXED = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>混合页面</title></head><body><p id="mixed-cn">${MIXED_CHINESE}</p><p id="mixed-cn2">${MIXED_CHINESE_MORE}</p><p id="mixed-en">${MIXED_ENGLISH}</p></body></html>`;
+// 框架里的正文：同源、跨源（另一个主机名）和 srcdoc 三种形态
+const FRAMED_TEXT = "Every translation is a small act of interpretation.";
+const FRAME_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><p id="inner">${FRAMED_TEXT}</p></body></html>`;
+const framesPage = (crossOrigin: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Frames</title></head><body><p id="lead">${LEAD}</p><p id="second">${BODY}</p><iframe id="same" src="/frame" style="width:600px;height:120px;border:0"></iframe><iframe id="cross" src="${crossOrigin}/frame" style="width:600px;height:120px;border:0"></iframe><iframe id="doc" srcdoc="<p id='inner'>${FRAMED_TEXT}</p>" style="width:600px;height:120px;border:0"></iframe></body></html>`;
 // 邮箱一类 Web 应用把界面语言写在 <html lang> 上，正文却是另一种语言
 const CHINESE_SHELL = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>收件箱</title></head><body><nav><a href="#">收件箱</a></nav><p id="mail-lead">${LEAD}</p><p id="mail-body">${BODY}</p><p id="mail-inner">${INNER}</p></body></html>`;
 
@@ -96,6 +100,9 @@ interface AiRequest {
 
 let server: http.Server;
 let origin: string;
+// 第二个服务器只为提供另一个主机名，用来验证跨源框架
+let otherServer: http.Server;
+let otherOrigin: string;
 let context: BrowserContext;
 let worker: Worker;
 let page: Page;
@@ -132,17 +139,31 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)), "/one-para": ONE_PARAGRAPH, "/short-en": SHORT_ENGLISH_PAGE };
+    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)), "/one-para": ONE_PARAGRAPH, "/short-en": SHORT_ENGLISH_PAGE, "/frame": FRAME_PAGE, "/frames": framesPage(otherOrigin) };
     response.end(pages[request.url ?? ""] ?? ARTICLE);
   });
+  otherServer = http.createServer((_request, response) => {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(FRAME_PAGE);
+  });
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("server did not bind to a port");
-      origin = `http://127.0.0.1:${address.port}`;
-      resolve();
+    otherServer.listen(0, "localhost", () => {
+      const other = otherServer.address();
+      if (!other || typeof other === "string") throw new Error("second server did not bind to a port");
+      otherOrigin = `http://localhost:${other.port}`;
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("server did not bind to a port");
+        origin = `http://127.0.0.1:${address.port}`;
+        resolve();
+      });
     });
   });
+}
+
+// 主框架排在第一位，其后依次是同源、跨源和 srcdoc 三个框架
+function framedTranslations(target: Page): Promise<(string | null)[]> {
+  return Promise.all(target.frames().slice(1).map((frame) => frame.evaluate(() => document.querySelector("#inner .fanyi-translation, #inner + .fanyi-translation")?.textContent ?? null).catch(() => null)));
 }
 
 // 快捷键和右键菜单都是后台向当前标签页发这条消息，测试从同一位置发起
@@ -249,6 +270,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await context?.close();
   server?.close();
+  otherServer?.close();
 });
 
 describe("the built extension in Chrome", () => {
@@ -446,6 +468,35 @@ describe("the built extension in Chrome", () => {
     expect(await short.evaluate(() => document.querySelector("#short-en .fanyi-translation, #short-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${SHORT_ENGLISH}`);
     await askActiveTab("TOGGLE_PAGE");
     await short.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("translates the text inside frames and lets the page's site rules reach them", async () => {
+    const framed = await context.newPage();
+    await framed.goto(`${origin}/frames`);
+    await framed.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await framed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+    // 顶层页面有两段、每个框架各一段：页面状态必须来自顶层框架，而不是先应答的那个框架
+    expect(await askActiveTab("GET_PAGE_STATE")).toMatchObject({ active: true, translatedCount: 2 });
+    // 同源、跨源和 srcdoc 三个框架的正文都要翻译
+    await expect.poll(() => framedTranslations(framed), { timeout: 15000 }).toEqual([`译文 ${FRAMED_TEXT}`, `译文 ${FRAMED_TEXT}`, `译文 ${FRAMED_TEXT}`]);
+
+    // 排除的是顶层页面的站点，另一个主机上的框架也要跟着恢复原文
+    const options = await openOptions("sites");
+    await setOption(options, "#excluded-sites", "127.0.0.1");
+    await framed.bringToFront();
+    await expect.poll(() => framedTranslations(framed)).toEqual([null, null, null]);
+    expect(await framed.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+
+    await options.bringToFront();
+    await setOption(options, "#excluded-sites", "");
+    await options.close();
+    await framed.bringToFront();
+    await expect.poll(async () => (await askActiveTab("GET_PAGE_STATE")).supported).toBe(true);
+    await expect.poll(async () => (await askActiveTab("TOGGLE_PAGE")).enabled).toBe(false);
+    await expect.poll(() => framedTranslations(framed)).toEqual([null, null, null]);
+    await framed.close();
     await page.bringToFront();
   }, 30000);
 

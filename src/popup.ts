@@ -23,7 +23,8 @@ function sendToTab<T>(message: RuntimeMessage): Promise<T> {
       reject(new Error("当前页面不可用"));
       return;
     }
-    chrome.tabs.sendMessage(activeTab.id, message, (response: T) => {
+    // 内容脚本在每个框架都有一份，只问顶层框架，否则回复取决于哪个框架先返回
+    chrome.tabs.sendMessage(activeTab.id, message, { frameId: 0 }, (response: T) => {
       const error = chrome.runtime.lastError;
       if (error) reject(new Error(error.message));
       else resolve(response);

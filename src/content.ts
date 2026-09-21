@@ -27,6 +27,21 @@ interface Run {
   lastFailure: string;
 }
 
+// 内容脚本会注入每个框架：顶层框架负责与扩展界面对话，子框架只管翻译自己的正文
+const topFrame = window === window.top;
+
+// 排除站点按用户看到的那个网站算，子框架要跟着顶层页面的主机名走
+function pageHostname(): string {
+  const ancestors = location.ancestorOrigins;
+  const top = ancestors.length ? ancestors[ancestors.length - 1] : "";
+  if (!top) return location.hostname;
+  try {
+    return new URL(top).hostname;
+  } catch {
+    return location.hostname;
+  }
+}
+
 let settings: Settings = DEFAULT_SETTINGS;
 let active = false;
 let translating = false;
@@ -84,6 +99,7 @@ function pageState(): PageStateResponse {
 }
 
 function notifyState(): void {
+  if (!topFrame) return;
   void chrome.runtime.sendMessage({ type: "PAGE_STATE_CHANGED", state: pageState() } satisfies RuntimeMessage).catch(() => undefined);
 }
 
@@ -241,6 +257,8 @@ function applyTranslationStyle(): void {
 }
 
 function showNotice(text: string): void {
+  // 子框架里的提示会被框架边界裁切，而且每个框架各弹一次，只让顶层框架提示
+  if (!topFrame) return;
   document.querySelector(".fanyi-notice")?.remove();
   const notice = document.createElement("div");
   notice.className = "fanyi-notice";
@@ -439,7 +457,7 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
     visibilityObserver.observe(paragraph.element);
   });
   queue.push(...paragraphs.slice(0, eager));
-  if (starting && settings.translateTitle) void translateTitle();
+  if (starting && topFrame && settings.translateTitle) void translateTitle();
   mutationObserver.observe(document.body, { childList: true, subtree: true });
   notifyState();
   drainQueue();
@@ -679,6 +697,8 @@ document.addEventListener("pointerdown", (event) => {
 });
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
+  // 弹窗、快捷键和右键菜单都只问顶层框架，子框架应答会让回复取决于哪个框架先返回
+  if (!topFrame && message.type !== "TRANSLATE_CURRENT_SELECTION" && message.type !== "SHOW_SELECTION_TRANSLATION") return false;
   if (message.type === "GET_PAGE_STATE") {
     sendResponse(pageState());
     return false;
@@ -720,10 +740,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   void getSettings().then((nextSettings) => {
     settings = nextSettings;
     const wasSupported = supported;
-    supported = !isSiteExcluded(location.hostname, settings.excludedSites);
+    supported = !isSiteExcluded(pageHostname(), settings.excludedSites);
     applyTranslationStyle();
     if (!supported) {
       if (active) stopTranslation();
+      return;
+    }
+    // 顶层框架由弹窗直接发消息重启，子框架只能从存储得知语言或服务变了
+    if (!topFrame && pageTranslationOn() && (changes.sourceLanguage || changes.targetLanguage || changes.provider)) {
+      void translatePage(true);
       return;
     }
     // 只在开关本身变化或本站重新被允许时跟随，免得每次改设置都重试语言相同而拒绝翻译的页面
@@ -735,7 +760,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 void getSettings().then((initialSettings) => {
   settings = initialSettings;
-  supported = !isSiteExcluded(location.hostname, settings.excludedSites);
+  supported = !isSiteExcluded(pageHostname(), settings.excludedSites);
   // 网页翻译开关打开时，进入网页就开始翻译
   if (supported && settings.pageTranslationEnabled) void translatePage(false);
 });
