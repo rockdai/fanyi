@@ -451,10 +451,18 @@ describe("Google batch translation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("returns symbol-only texts untouched without any request", async () => {
+  it("returns number-only and symbol-only texts untouched without any request", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await expect(translateTexts(["%%", "…", "→"], DEFAULT_SETTINGS, "en", "zh-CN")).resolves.toEqual(["%%", "…", "→"]);
+    const texts = ["%%", "…", "→", "2026", "12,345.67%", "¥ 1,234", "１２３"];
+    await expect(translateTexts(texts, DEFAULT_SETTINGS, "en", "zh-CN")).resolves.toEqual(texts);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns texts untouched when source and target languages match", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(translateTexts(["Already English"], DEFAULT_SETTINGS, "en-US", "en")).resolves.toEqual(["Already English"]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

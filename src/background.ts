@@ -1,5 +1,5 @@
 import { TRANSLATE_PORT, type RuntimeMessage, type TestProviderMessage, type TranslateTextsMessage, type TranslationResponse } from "./messages";
-import { getSettings } from "./settings";
+import { getSettings, isSameLanguage } from "./settings";
 import { translateTexts } from "./translation";
 
 const SELECTION_MENU_ID = "fanyi-translate-selection";
@@ -54,8 +54,9 @@ async function translate(message: TranslateTextsMessage | TestProviderMessage, s
   try {
     const settings = await getSettings();
     const texts = message.type === "TEST_PROVIDER" ? ["The world is full of things worth understanding."] : message.texts;
-    const sourceLanguage = message.type === "TEST_PROVIDER" ? "en" : message.sourceLanguage;
     const targetLanguage = message.type === "TEST_PROVIDER" ? settings.targetLanguage : message.targetLanguage;
+    // 测试连接必须真正请求服务，目标是英文时不能被同语种短路拦下
+    const sourceLanguage = message.type === "TEST_PROVIDER" ? isSameLanguage("en", targetLanguage) ? "auto" : "en" : message.sourceLanguage;
     const translations = await translateTexts(texts, settings, sourceLanguage, targetLanguage, signal);
     return { ok: true, translations };
   } catch (error) {

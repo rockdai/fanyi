@@ -17,6 +17,7 @@ const FIXTURE = `
   const shadows = new WeakMap();
   const fixedTranslations = { "Review the setup notes before you continue.": "请仔细阅读安装与配置的完整说明。" };
   window.__sent = [];
+  window.__unchanged = [];
   window.__cancelled = 0;
   window.__pending = [];
   window.__holdRequests = false;
@@ -30,7 +31,7 @@ const FIXTURE = `
         if (window.__delay) await new Promise((resolve) => setTimeout(resolve, window.__delay));
         if (message.type !== "TRANSLATE_TEXTS") return;
         if (window.__failAll || (window.__failText && message.texts.some((text) => text.startsWith(window.__failText)))) throw new Error("request failed on purpose");
-        const reply = () => ({ ok: true, translations: message.texts.map((text) => fixedTranslations[text] ?? "译文 " + text) });
+        const reply = () => ({ ok: true, translations: message.texts.map((text) => window.__unchanged.includes(text) ? text : fixedTranslations[text] ?? "译文 " + text) });
         if (!window.__holdRequests) return reply();
         return new Promise((resolve, reject) => window.__pending.push({ texts: message.texts, resolve: () => resolve(reply()), reject: () => reject(new Error("held request failed")) }));
       },
@@ -57,10 +58,10 @@ const FIXTURE = `
       },
     },
     i18n: {
-      detectLanguage: async () => {
+      detectLanguage: async (text) => {
         if (window.__detectDelay) await new Promise((resolve) => setTimeout(resolve, window.__detectDelay));
         if (window.__holdDetect) await new Promise((resolve) => window.__detections.push(resolve));
-        return { isReliable: window.__detectReliable ?? true, languages: [{ language: window.__detected ?? "en", percentage: 92 }] };
+        return { isReliable: window.__detectReliable ?? true, languages: [{ language: window.__detectedByText?.[text] ?? window.__detected ?? "en", percentage: 92 }] };
       },
     },
     storage: {
@@ -726,6 +727,50 @@ describe("page language", () => {
   });
 });
 
+describe("unchanged translation results", () => {
+  it("skips target-language paragraphs inside a mixed page before sending a request", async () => {
+    const targetText = "这是一段已经是中文的正文。";
+    const foreignText = "This paragraph still needs translation.";
+    const fresh = await openPage('{ sourceLanguage: "auto", targetLanguage: "zh-CN", translateTitle: false }');
+    const content = `<p id="target-text">${targetText}</p><p id="foreign-text">${foreignText}</p>`;
+    const detections = { [`${targetText} ${foreignText}`]: "en", [targetText]: "zh", [foreignText]: "en" };
+    await fresh.evaluate(`document.querySelector('.site').innerHTML = ${JSON.stringify(content)}; window.__detectedByText = ${JSON.stringify(detections)}; window.__sent.length = 0`);
+
+    await fresh.evaluate("__toggleAsync()");
+    await fresh.waitForFunction(() => document.querySelectorAll("[data-fanyi-processed]").length === 2 && !document.querySelector(".fanyi-translation[data-loading]"));
+    const requested = await fresh.evaluate<string[]>("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').flatMap((m) => m.texts)");
+    expect(requested).toEqual([foreignText]);
+    expect(await fresh.evaluate("Boolean(__translation('target-text'))")).toBe(false);
+    expect(await fresh.evaluate("__translation('foreign-text').text")).toBe(`译文 ${foreignText}`);
+    await fresh.close();
+  });
+
+  it("does not request or render numeric-only page content", async () => {
+    const fresh = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
+    await fresh.evaluate("document.querySelector('.site').innerHTML = '<p id=\"number\">12,345.67%</p>'; document.title = '2026'; window.__sent.length = 0");
+
+    await fresh.evaluate("__toggleAsync()");
+    expect(await fresh.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length")).toBe(0);
+    expect(await fresh.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
+    expect(await fresh.evaluate("document.title")).toBe("2026");
+    await fresh.close();
+  });
+
+  it("removes unchanged paragraph and title results after a provider responds", async () => {
+    const paragraph = "Keep this paragraph exactly as written.";
+    const title = "Keep this title";
+    const fresh = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
+    await fresh.evaluate(`document.querySelector('.site').innerHTML = ${JSON.stringify(`<p id="unchanged">${paragraph}</p>`)}; document.title = ${JSON.stringify(title)}; window.__unchanged = ${JSON.stringify([paragraph, title])}; window.__sent.length = 0`);
+
+    await fresh.evaluate("__toggleAsync()");
+    await fresh.waitForFunction("window.__sent.filter((message) => message.type === 'TRANSLATE_TEXTS').length === 2 && !document.querySelector('.fanyi-translation[data-loading]')");
+    expect(await fresh.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
+    expect(await fresh.evaluate("document.title")).toBe(title);
+    expect(await fresh.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: 0 });
+    await fresh.close();
+  });
+});
+
 describe("restart after a settings write", () => {
   it("reads the settings that were just saved instead of the ones it had cached", async () => {
     const fresh = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
@@ -903,6 +948,25 @@ describe("selection translation in a real page", () => {
     expect(await page.evaluate("window.__cancelled")).toBe(2);
     expect(await page.evaluate("Boolean(__overlay('selection'))")).toBe(false);
     await page.evaluate("window.__holdRequests = false; window.__pending.splice(0).forEach((p) => p.resolve())");
+  });
+
+  it("does not open or request for a selection already in the target language", async () => {
+    const fresh = await openPage('{ sourceLanguage: "auto", targetLanguage: "en" }');
+    await fresh.evaluate("window.__sent.length = 0; __select('plain')");
+    await fresh.waitForTimeout(400);
+    expect(await fresh.evaluate("Boolean(__overlay('selection'))")).toBe(false);
+    expect(await fresh.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length")).toBe(0);
+    await fresh.close();
+  });
+
+  it("closes the selection card when the provider returns the source unchanged", async () => {
+    const source = "A plain paragraph in the host page.";
+    const fresh = await openPage('{ sourceLanguage: "de", targetLanguage: "en" }');
+    await fresh.evaluate(`window.__unchanged = [${JSON.stringify(source)}]; window.__sent.length = 0; window.__select('plain')`);
+    await fresh.waitForFunction("window.__sent.some((message) => message.type === 'TRANSLATE_TEXTS')");
+    await fresh.waitForFunction("!window.__overlay('selection')");
+    expect(await fresh.evaluate("window.__sent.filter((m) => m.type === 'TRANSLATE_TEXTS').length")).toBe(1);
+    await fresh.close();
   });
 
   it("stays quiet when selection translation is disabled", async () => {

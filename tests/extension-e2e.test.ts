@@ -398,10 +398,11 @@ describe("the built extension in Chrome", () => {
     const mixed = await context.newPage();
     await mixed.goto(`${origin}/mixed`);
     await mixed.bringToFront();
-    // 检测把中文排在第一位，但英文那段仍然要翻译，不能整页拒绝
+    // 检测把中文排在第一位，但英文那段仍然要翻译，已是中文的段落不重复展示
     expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
-    await mixed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 3, undefined, { timeout: 15000 });
+    await mixed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
     expect(await mixed.evaluate(() => document.querySelector("#mixed-en .fanyi-translation, #mixed-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${MIXED_ENGLISH}`);
+    expect(await mixed.evaluate(() => document.querySelector("#mixed-cn .fanyi-translation, #mixed-cn + .fanyi-translation")?.textContent ?? null)).toBeNull();
     expect(await mixed.evaluate(() => Boolean(document.querySelector(".fanyi-notice")))).toBe(false);
     await askActiveTab("TOGGLE_PAGE");
     await mixed.close();
@@ -427,7 +428,7 @@ describe("the built extension in Chrome", () => {
     await mixed.goto(`${origin}/long-mixed`);
     await mixed.bringToFront();
     expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
-    await mixed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+    await mixed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
     expect(await mixed.evaluate(() => document.querySelector("#long-en .fanyi-translation, #long-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${LONG_ENGLISH}`);
     await askActiveTab("TOGGLE_PAGE");
     await mixed.close();
@@ -465,7 +466,7 @@ describe("the built extension in Chrome", () => {
       await beside.goto(`${origin}${path}`);
       await beside.bringToFront();
       expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
-      await beside.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+      await beside.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
       expect(await beside.evaluate(() => document.querySelector("#beside-en .fanyi-translation, #beside-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${SAME_ENGLISH}`);
       await askActiveTab("TOGGLE_PAGE");
       await beside.close();
@@ -489,7 +490,7 @@ describe("the built extension in Chrome", () => {
     await short.goto(`${origin}/short-en`);
     await short.bringToFront();
     expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
-    await short.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+    await short.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
     expect(await short.evaluate(() => document.querySelector("#short-en .fanyi-translation, #short-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${SHORT_ENGLISH}`);
     await askActiveTab("TOGGLE_PAGE");
     await short.close();

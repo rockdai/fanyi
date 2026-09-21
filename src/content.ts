@@ -11,6 +11,7 @@ const MIN_LANGUAGE_BYTES = 40;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_CONCURRENT_BATCHES = 3;
 const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
+const HAS_LETTER = /\p{L}/u;
 
 interface Paragraph {
   element: HTMLElement;
@@ -148,7 +149,7 @@ function translatableText(element: HTMLElement, skip: string): string | undefine
   if (element.querySelector(BLOCK_SELECTOR) || !isVisible(element)) return undefined;
   const text = extractText(element);
   if (text.length < settings.minParagraphLength || text.length > 5000) return undefined;
-  if (!/[\p{L}\p{N}]/u.test(text) || element.children.length > 12) return undefined;
+  if (!HAS_LETTER.test(text) || element.children.length > 12) return undefined;
   return text;
 }
 
@@ -240,6 +241,10 @@ function retryTranslation(translation: HTMLElement): void {
 }
 
 function fillTranslation(translation: HTMLElement, text: string): void {
+  if (paragraphOf.get(translation)?.text === text) {
+    translation.remove();
+    return;
+  }
   const content = settings.sentenceBreaks ? breakSentences(text) : text;
   if (content !== text) translation.dataset.breaks = "true";
   translation.textContent = content;
@@ -298,9 +303,10 @@ function sendTranslationRequest(texts: string[], sourceLanguage: string, targetL
   });
 }
 
-async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string, stillWanted: () => boolean, requests: Set<() => void>): Promise<string[]> {
+async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string, detectTargetLanguage: boolean, stillWanted: () => boolean, requests: Set<() => void>): Promise<string[]> {
   // 正文、标题、划词都经过这里：超长文本拆段、按段落数和字符数分批，再按原顺序回组
-  const pieces = texts.map((text) => splitText(text, settings.maxCharsPerRequest));
+  const unnecessary = await Promise.all(texts.map((text) => translationUnnecessary(text, sourceLanguage, targetLanguage, detectTargetLanguage)));
+  const pieces = texts.map((text, index) => unnecessary[index] ? [] : splitText(text, settings.maxCharsPerRequest));
   const flat = pieces.flat();
   const translated: string[] = [];
   while (translated.length < flat.length) {
@@ -308,10 +314,16 @@ async function requestTranslations(texts: string[], sourceLanguage: string, targ
     if (!stillWanted()) throw new Error("翻译已取消");
     const window = flat.slice(translated.length, translated.length + settings.maxParagraphsPerRequest);
     const batch = window.slice(0, batchSizeFor(window.map((text) => text.length), settings.maxCharsPerRequest));
-    translated.push(...(await sendTranslationRequest(batch, sourceLanguage, targetLanguage, requests)));
+    const neededIndexes = batch.flatMap((text, index) => HAS_LETTER.test(text) ? [index] : []);
+    const batchTranslations = [...batch];
+    if (neededIndexes.length) {
+      const received = await sendTranslationRequest(neededIndexes.map((index) => batch[index]), sourceLanguage, targetLanguage, requests);
+      neededIndexes.forEach((index, offset) => { batchTranslations[index] = received[offset]; });
+    }
+    translated.push(...batchTranslations);
   }
   let cursor = 0;
-  return pieces.map(({ length }) => translated.slice(cursor, (cursor += length)).join(" "));
+  return pieces.map(({ length }, index) => length ? translated.slice(cursor, (cursor += length)).join(" ") : texts[index]);
 }
 
 function drainQueue(): void {
@@ -332,7 +344,7 @@ async function translateBatch(current: Run): Promise<void> {
   const batch = queue.splice(0, batchSizeFor(candidates.map(({ text }) => text.length), settings.maxCharsPerRequest));
   const placeholders = batch.map((paragraph) => createTranslationElement(paragraph));
   try {
-    const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage, () => run === current, pageRequests);
+    const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage, settings.detectSameLanguage, () => run === current, pageRequests);
     // 停止或重启后这一轮已被丢弃，旧结果不能碰新队列和新占位符
     if (run !== current) return;
     placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
@@ -377,6 +389,19 @@ function matchesTarget(language: string, declared: string, text: string): boolea
   return isSameLanguage(refineLanguage(language, declared, text), settings.targetLanguage);
 }
 
+async function translationUnnecessary(text: string, sourceLanguage: string, targetLanguage: string, detectTargetLanguage: boolean): Promise<boolean> {
+  if (!HAS_LETTER.test(text)) return true;
+  if (sourceLanguage !== "auto") return isSameLanguage(sourceLanguage, targetLanguage);
+  if (!detectTargetLanguage) return false;
+  try {
+    const { isReliable, languages } = await chrome.i18n.detectLanguage(text);
+    const found = languages.filter(({ language }) => language && language !== "und");
+    return isReliable && found.length > 0 && found.every(({ language }) => isSameLanguage(refineLanguage(language, "", text), targetLanguage));
+  } catch {
+    return false;
+  }
+}
+
 // 占比精度不足以判定时才逐段复核：每一段都确认是目标语言才允许拒译，确认不了就当作有外语
 // 不看 isReliable：Chromium 对不足 50 字节的输入一律标记为不可靠，会把刚过门槛的外语段落漏掉
 async function everyParagraphInTarget(paragraphs: Paragraph[], declared: string): Promise<boolean> {
@@ -419,9 +444,9 @@ async function translateTitle(): Promise<void> {
   originalTitle = document.title;
   const currentGeneration = generation;
   try {
-    const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage, () => active && currentGeneration === generation, pageRequests);
+    const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage, false, () => active && currentGeneration === generation, pageRequests);
     // 网页在此期间自己改了标题就不再覆盖
-    if (!active || currentGeneration !== generation || !translated || document.title !== originalTitle) return;
+    if (!active || currentGeneration !== generation || !translated || translated === title || document.title !== originalTitle) return;
     translatedTitle = `${translated} | ${originalTitle}`;
     document.title = translatedTitle;
   } catch {
@@ -600,8 +625,10 @@ function closeSelection(): void {
 async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<void> {
   const normalized = text.replace(/\s+/g, " ").trim().slice(0, 2000);
   if (normalized.length < 2) return;
+  const openingRequest = ++selectionRequest;
   closeSelection();
   selectionButton?.remove();
+  if (await translationUnnecessary(normalized, settings.selectionSourceLanguage, settings.selectionTargetLanguage, true) || openingRequest !== selectionRequest) return;
 
   const host = document.createElement("div");
   host.dataset.fanyiRoot = "selection";
@@ -625,7 +652,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
   host.addEventListener("pointerdown", (event) => event.stopPropagation());
   positionSelectionHost(host, rect);
 
-  const translate = async (): Promise<void> => {
+  const translate = async (detectTargetLanguage = true): Promise<void> => {
     const requestId = ++selectionRequest;
     selectionRequests.forEach((cancel) => cancel());
     selectionRequests.clear();
@@ -633,8 +660,12 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
     result.textContent = "正在理解这段文字";
     copyButton.disabled = true;
     try {
-      const [translation] = await requestTranslations([normalized], from.value, to.value, () => requestId === selectionRequest && host.isConnected, selectionRequests);
+      const [translation] = await requestTranslations([normalized], from.value, to.value, detectTargetLanguage, () => requestId === selectionRequest && host.isConnected, selectionRequests);
       if (requestId !== selectionRequest || !host.isConnected) return;
+      if (translation === normalized) {
+        closeSelection();
+        return;
+      }
       result.className = "result";
       result.textContent = translation;
       copyButton.disabled = false;
@@ -656,7 +687,7 @@ async function showSelectionTranslation(text: string, rect?: DOMRect): Promise<v
   };
   from.addEventListener("change", changeLanguages);
   to.addEventListener("change", changeLanguages);
-  await translate();
+  await translate(false);
 }
 
 function showSelectionButton(text: string, rect: DOMRect, point: { x: number; y: number }): void {

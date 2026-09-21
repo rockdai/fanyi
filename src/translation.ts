@@ -1,4 +1,4 @@
-import { languageName, type ApiVendor, type Settings } from "./settings";
+import { isSameLanguage, languageName, type ApiVendor, type Settings } from "./settings";
 
 const translationCache = new Map<string, string>();
 const MAX_CACHE_SIZE = 500;
@@ -293,8 +293,8 @@ export async function translateTexts(texts: string[], settings: Settings, source
   const missing: Array<{ index: number; text: string; key: string }> = [];
 
   normalizedTexts.forEach((text, index) => {
-    // 纯符号片段无需翻译；切分后恰好等于 %% 的片段若送出去会与协议分隔符混淆
-    if (!/[\p{L}\p{N}]/u.test(text)) {
+    // 纯数字或符号片段无需翻译；切分后恰好等于 %% 的片段若送出去会与协议分隔符混淆
+    if (!/\p{L}/u.test(text) || isSameLanguage(sourceLanguage, targetLanguage)) {
       results[index] = text;
       return;
     }
