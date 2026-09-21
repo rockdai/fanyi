@@ -53,6 +53,13 @@ const CHINESE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><
 const TRADITIONAL_LEAD = "閱讀不同語言的文章能夠幫助我們理解世界的另一面。";
 const TRADITIONAL_BODY = "良好的翻譯應該保留原文的含義，同時讓讀者感覺不到轉換的痕跡，這需要譯者對兩種語言都有足夠的體會。";
 const TRADITIONAL = `<!doctype html><html lang="zh-TW"><head><meta charset="utf-8"><title>繁體頁面</title></head><body><p id="tw-lead">${TRADITIONAL_LEAD}</p><p id="tw-body">${TRADITIONAL_BODY}</p></body></html>`;
+// 页面声明的是英文，正文却是繁体中文：检测只会说 zh，简繁只能从正文的专用字看出来
+const DECLARED_EN_TRADITIONAL = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Mail</title></head><body><p id="tw-mail">${TRADITIONAL_LEAD}${TRADITIONAL_BODY}</p></body></html>`;
+// 很长的中文配一整段英文：英文占比被稀释到 7% 左右，但它仍是三句完整正文
+const LONG_CHINESE = "阅读不同语言的文章能够帮助我们理解世界的另一面。良好的翻译应该保留原文的含义，同时让读者感觉不到转换的痕迹，这需要译者对两种语言都有足够的体会。".repeat(15);
+const LONG_ENGLISH = "Reading in another language can help us understand the world. A good translation preserves the meaning of the original text and makes difficult ideas easier to understand. Please read this message carefully and reply when you have finished reviewing the information.";
+const FAINT_ENGLISH = "Please reply before Friday.";
+const longPage = (english: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>长文</title></head><body><p id="long-cn">${LONG_CHINESE}</p><p id="long-en">${english}</p></body></html>`;
 // 以中文为主但仍有整段英文：检测会同时报出两种语言，英文那段正是要翻译的
 const MIXED_CHINESE = "这是一段中文说明，用来占据页面的大部分篇幅。";
 const MIXED_CHINESE_MORE = "良好的翻译应该保留原文的含义，同时让读者感觉不到转换的痕迹，这需要译者对两种语言都有足够的体会。";
@@ -113,7 +120,7 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED };
+    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH) };
     response.end(pages[request.url ?? ""] ?? ARTICLE);
   });
   return new Promise((resolve) => {
@@ -341,6 +348,41 @@ describe("the built extension in Chrome", () => {
     expect(await mixed.evaluate(() => Boolean(document.querySelector(".fanyi-notice")))).toBe(false);
     await askActiveTab("TOGGLE_PAGE");
     await mixed.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("translates traditional text even when the page declares another language", async () => {
+    const mail = await context.newPage();
+    await mail.goto(`${origin}/en-tw`);
+    await mail.bringToFront();
+    // 检测只说 zh，声明又是 en，简繁只能从正文的专用字判断
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await mail.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 1, undefined, { timeout: 15000 });
+    expect(await mail.evaluate(() => document.querySelector("#tw-mail .fanyi-translation, #tw-mail + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${TRADITIONAL_LEAD}${TRADITIONAL_BODY}`);
+    await askActiveTab("TOGGLE_PAGE");
+    await mail.close();
+    await page.bringToFront();
+  }, 30000);
+
+  it("tells a whole foreign paragraph from a few foreign words however long the rest of the page is", async () => {
+    // 英文整段只占约 7%，但它是三句完整正文，仍然要翻译
+    const mixed = await context.newPage();
+    await mixed.goto(`${origin}/long-mixed`);
+    await mixed.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: true, supported: true });
+    await mixed.waitForFunction(() => document.querySelectorAll(".fanyi-translation:not([data-loading])").length === 2, undefined, { timeout: 15000 });
+    expect(await mixed.evaluate(() => document.querySelector("#long-en .fanyi-translation, #long-en + .fanyi-translation")?.textContent ?? null)).toBe(`译文 ${LONG_ENGLISH}`);
+    await askActiveTab("TOGGLE_PAGE");
+    await mixed.close();
+
+    // 同一篇中文只带一句英文时仍算零星外语，不该整页重译
+    const faint = await context.newPage();
+    await faint.goto(`${origin}/long-faint`);
+    await faint.bringToFront();
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: false, translatedCount: 0 });
+    await faint.waitForFunction(() => document.querySelector(".fanyi-notice")?.textContent === "页面语言与目标语言相同，无需翻译");
+    expect(await faint.evaluate(() => document.querySelectorAll(".fanyi-translation").length)).toBe(0);
+    await faint.close();
     await page.bringToFront();
   }, 30000);
 

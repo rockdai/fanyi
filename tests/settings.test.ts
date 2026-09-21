@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSameLanguage, isSiteExcluded, mergeSettings, normalizeDomain } from "../src/settings";
+import { chineseScript, isSameLanguage, isSiteExcluded, mergeSettings, normalizeDomain } from "../src/settings";
 
 describe("site exclusion", () => {
   it("normalizes URL-like input", () => {
@@ -25,6 +25,16 @@ describe("page translation switch", () => {
     expect(mergeSettings({})).toMatchObject({ pageTranslationEnabled: false });
     expect(mergeSettings({ translateFullPage: true })).toMatchObject({ pageTranslationEnabled: false });
     expect(mergeSettings({ pageTranslationEnabled: true })).toMatchObject({ pageTranslationEnabled: true });
+  });
+});
+
+describe("chinese script", () => {
+  it("tells traditional from simplified by the characters only one of them uses", () => {
+    expect(chineseScript("閱讀不同語言的文章能夠幫助我們理解世界的另一面。")).toBe("zh-Hant");
+    expect(chineseScript("阅读不同语言的文章能够帮助我们理解世界的另一面。")).toBe("zh-Hans");
+    // 两种写法完全一样的句子无从分辨，交回调用方按声明或目标语言决定
+    expect(chineseScript("今天天气很好")).toBeUndefined();
+    expect(chineseScript("Reading in another language helps.")).toBeUndefined();
   });
 });
 

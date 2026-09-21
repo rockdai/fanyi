@@ -60,7 +60,7 @@ const FIXTURE = `
       detectLanguage: async () => {
         if (window.__detectDelay) await new Promise((resolve) => setTimeout(resolve, window.__detectDelay));
         if (window.__holdDetect) await new Promise((resolve) => window.__detections.push(resolve));
-        return { isReliable: window.__detectReliable ?? true, languages: window.__detectedLanguages ?? [{ language: window.__detected ?? "en", percentage: 92 }] };
+        return { isReliable: window.__detectReliable ?? true, languages: [{ language: window.__detected ?? "en", percentage: 92 }] };
       },
     },
     storage: {
@@ -711,21 +711,6 @@ describe("page language", () => {
     await same.waitForFunction("document.querySelector('.fanyi-notice')");
     expect(await same.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
     await same.close();
-  });
-
-  it("translates when a sizeable share of the text is not the target language, and ignores a trace of it", async () => {
-    const mixed = await openPage('{ sourceLanguage: "auto", targetLanguage: "zh-CN" }');
-    await mixed.evaluate("window.__detectedLanguages = [{ language: 'zh', percentage: 78 }, { language: 'en', percentage: 21 }]; __toggle()");
-    await mixed.waitForFunction(() => document.querySelector(".fanyi-translation") && !document.querySelector(".fanyi-translation[data-loading]"));
-    expect(await mixed.evaluate("__state()")).toMatchObject({ active: true });
-    await mixed.close();
-
-    // 只有零星外来词时仍然算同一种语言，不该整页重译
-    const trace = await openPage('{ sourceLanguage: "auto", targetLanguage: "zh-CN" }');
-    await trace.evaluate("window.__detectedLanguages = [{ language: 'zh', percentage: 95 }, { language: 'en', percentage: 5 }]; __toggle()");
-    await trace.waitForFunction("document.querySelector('.fanyi-notice')");
-    expect(await trace.evaluate("document.querySelectorAll('.fanyi-translation').length")).toBe(0);
-    await trace.close();
   });
 
   it("falls back to the declared language when the text is too little to tell", async () => {

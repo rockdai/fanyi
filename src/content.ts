@@ -1,13 +1,13 @@
 import { TRANSLATE_PORT, type PageStateResponse, type RuntimeMessage, type TranslationResponse } from "./messages";
 import { batchSizeFor, breakSentences, leadingCount, splitText } from "./paragraphs";
-import { DEFAULT_SETTINGS, getSettings, isSameLanguage, isSiteExcluded, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type LanguageOption, type Settings } from "./settings";
+import { chineseScript, DEFAULT_SETTINGS, getSettings, isSameLanguage, isSiteExcluded, saveSettings, SOURCE_LANGUAGES, TARGET_LANGUAGES, type LanguageOption, type Settings } from "./settings";
 
 const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, td, th, dd";
 const TEXT_SELECTOR = "div, span, a, dt, label, summary, small, strong, em, b, i";
 const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
 const MAX_PAGE_BLOCKS = 1000;
-// 语言检测里占比低于此值的当作噪声，几个外来词不该让整页重新翻译
-const MIN_LANGUAGE_SHARE = 10;
+// 占比要换算成字符数再判断：一句话以上的外语正文就值得翻译，几个外来词不算
+const MIN_LANGUAGE_CHARACTERS = 40;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_CONCURRENT_BATCHES = 3;
 const INHERITED_TEXT_PROPERTIES = ["color", "font-family", "font-weight", "font-style", "line-height", "letter-spacing", "text-align", "text-transform"];
@@ -337,16 +337,26 @@ function primarySubtag(code: string): string {
   return code.trim().toLowerCase().split(/[-_]/)[0];
 }
 
+// 检测只给出语言，声明可能带着更精确的地区或脚本
+function refineLanguage(language: string, declared: string, sample: string): string {
+  if (primarySubtag(declared) === primarySubtag(language)) return declared;
+  // 检测分不出中文简繁，声明又给不出时按正文里的简繁专用字判断；一个专用字都没有说明两种写法一样
+  if (primarySubtag(language) === "zh") return chineseScript(sample) ?? language;
+  return language;
+}
+
 // <html lang> 往往只是界面语言，邮箱一类应用的正文与它不是一种语言，所以按将要翻译的正文判断
 async function sampleLanguages(sample: string): Promise<string[]> {
   if (settings.sourceLanguage !== "auto") return [settings.sourceLanguage];
   const declared = document.documentElement.lang;
   const { isReliable, languages } = await chrome.i18n.detectLanguage(sample);
-  const detected = languages.filter(({ language, percentage }) => language && language !== "und" && percentage >= MIN_LANGUAGE_SHARE).map(({ language }) => language);
+  const found = languages.filter(({ language }) => language && language !== "und");
+  // 占比是相对全样本的，中文正文越长英文占比越小，所以换算成字符数再决定是不是零星外来词
+  const [main, ...rest] = found;
+  const detected = main ? [main, ...rest.filter(({ percentage }) => (percentage / 100) * sample.length >= MIN_LANGUAGE_CHARACTERS)] : [];
   // 样本太短或页面没有可翻译正文时检测不可靠，只能退回页面自己声明的语言
-  if (!isReliable || detected.length === 0) return declared ? [declared] : detected;
-  // 检测分不出中文的简繁，声明的语言与检测结果同属一种语言时用更精确的声明值
-  return detected.map((language) => (primarySubtag(declared) === primarySubtag(language) ? declared : language));
+  if (!isReliable || detected.length === 0) return declared ? [declared] : detected.map(({ language }) => language);
+  return detected.map(({ language }) => refineLanguage(language, declared, sample));
 }
 
 async function translateTitle(): Promise<void> {
