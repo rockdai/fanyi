@@ -56,14 +56,15 @@ const TRADITIONAL = `<!doctype html><html lang="zh-TW"><head><meta charset="utf-
 // 页面声明的是英文，正文却是繁体中文：检测只会说 zh，简繁只能从正文的专用字看出来
 const DECLARED_EN_TRADITIONAL = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Mail</title></head><body><p id="tw-mail">${TRADITIONAL_LEAD}${TRADITIONAL_BODY}</p></body></html>`;
 // 很长的中文配一整段英文：英文占比被稀释到 7% 左右，但它仍是三句完整正文
-const LONG_CHINESE = "阅读不同语言的文章能够帮助我们理解世界的另一面。良好的翻译应该保留原文的含义，同时让读者感觉不到转换的痕迹，这需要译者对两种语言都有足够的体会。".repeat(15);
+const LONG_CHINESE = "阅读不同语言的文章能够帮助我们理解世界的另一面。良好的翻译应该保留原文的含义，同时让读者感觉不到转换的痕迹，这需要译者对两种语言都有足够的体会。".repeat(20);
 const LONG_ENGLISH = "Reading in another language can help us understand the world. A good translation preserves the meaning of the original text and makes difficult ideas easier to understand. Please read this message carefully and reply when you have finished reviewing the information.";
 const FAINT_ENGLISH = "Please reply before Friday.";
 // 常用字表收不全：这段繁体正文一个收录字都没有，脚本判不出来时不能当成简体
 const UNLISTED_TRADITIONAL = "早餐吃雞蛋和麵包，午餐吃豬肉和米飯，晚餐喝魚湯。餐廳有咖啡、牛奶和紅茶，也有蘋果、香蕉和葡萄。廚房有冰箱、烤箱和微波爐。飯後用熱水清洗碗盤，保持廚房乾淨整潔。";
 const UNLISTED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Menu</title></head><body><p id="unlisted">${UNLISTED_TRADITIONAL}</p></body></html>`;
 // 同一段英文配长短不同的中文：它该不该翻译只取决于它自己有多长
-const SAME_ENGLISH = "Please read this message carefully. Review the attached report and send your comments before Friday.";
+// 中文足够长时检测会把这段英文的占比截断为 0%，那时占比已经判不出它有多长
+const SAME_ENGLISH = "Read this message carefully. Review the report and send your comments before Friday.";
 const englishBeside = (chinese: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>报告</title></head><body><p id="beside-cn">${chinese}</p><p id="beside-en">${SAME_ENGLISH}</p></body></html>`;
 const longPage = (english: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>长文</title></head><body><p id="long-cn">${LONG_CHINESE}</p><p id="long-en">${english}</p></body></html>`;
 // 以中文为主但仍有整段英文：检测会同时报出两种语言，英文那段正是要翻译的
@@ -126,7 +127,7 @@ function startServer(): Promise<void> {
       return;
     }
     response.setHeader("content-type", "text/html; charset=utf-8");
-    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)) };
+    const pages: Record<string, string> = { "/zh": CHINESE, "/zh-shell": CHINESE_SHELL, "/zh-tw": TRADITIONAL, "/mixed": MIXED, "/en-tw": DECLARED_EN_TRADITIONAL, "/long-mixed": longPage(LONG_ENGLISH), "/long-faint": longPage(FAINT_ENGLISH), "/unlisted": UNLISTED_PAGE, "/beside-long": englishBeside(LONG_CHINESE), "/beside-short": englishBeside(LONG_CHINESE.slice(0, 111)), "/beside-huge": englishBeside(LONG_CHINESE.repeat(3).slice(0, 3096)) };
     response.end(pages[request.url ?? ""] ?? ARTICLE);
   });
   return new Promise((resolve) => {
@@ -406,7 +407,8 @@ describe("the built extension in Chrome", () => {
   }, 30000);
 
   it("decides on the same english paragraph the same way however much chinese sits next to it", async () => {
-    for (const path of ["/beside-long", "/beside-short"]) {
+    // 中文最长的那一页里英文占比被截断为 0%，仍要按这段英文自己的长度决定
+    for (const path of ["/beside-short", "/beside-long", "/beside-huge"]) {
       const beside = await context.newPage();
       await beside.goto(`${origin}${path}`);
       await beside.bringToFront();
