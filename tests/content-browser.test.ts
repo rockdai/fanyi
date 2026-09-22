@@ -1139,6 +1139,7 @@ describe("in-place translation in a real page", () => {
     expect(notice).toBe("1 个段落翻译失败：request failed on purpose");
     await fresh.evaluate("window.__notice = document.querySelector('.fanyi-notice'); window.__failText = null; window.__sent.length = 0; document.querySelector('.site').insertAdjacentHTML('beforeend', '<p id=added>Fresh article text.</p>')");
     await fresh.waitForFunction(() => document.querySelector("#added")?.textContent?.includes("译文 Fresh article text."));
+    expect(await fresh.evaluate("window.__notice.isConnected")).toBe(true);
     await finished(fresh);
     expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS').flatMap(m => m.texts)")).toEqual(["Fresh article text."]);
     expect(await fresh.evaluate("window.__notice.textContent")).toBe(notice);
