@@ -927,6 +927,71 @@ describe("in-place translation in a real page", () => {
     await fresh.close();
   });
 
+  it.each(["", "height: 24px; overflow: hidden;"])("keeps in-place loading and errors after the source at its font size (%s)", async (layout) => {
+    const fresh = await openInPlace(`<p id="copy" style="font-size: 20px; line-height: 24px; ${layout}">Read the guide.</p>`);
+    await fresh.evaluate("__updateSettings({ fontScale: 80, translationFirst: true, translateTitle: false })");
+    await fresh.evaluate("window.__holdRequests = true; __toggleAsync()");
+    await fresh.waitForFunction("window.__pending.length === 1");
+    const placement = () => fresh.evaluate(() => {
+      const source = document.querySelector("#copy");
+      const translation = document.querySelector(".fanyi-translation");
+      if (!(source instanceof HTMLElement) || !(translation instanceof HTMLElement)) throw new Error("missing translation placeholder");
+      return {
+        position: translation.dataset.position,
+        after: source.lastChild === translation || source.nextElementSibling === translation,
+        fontSize: getComputedStyle(translation).fontSize,
+        sourceFontSize: getComputedStyle(source).fontSize,
+      };
+    });
+    const expected = { position: "after", after: true, fontSize: "20px", sourceFontSize: "20px" };
+    expect(await placement()).toEqual(expected);
+    await fresh.evaluate("__updateSettings({ fontScale: 120, translationFirst: false })");
+    expect(await placement()).toEqual(expected);
+    await fresh.evaluate("window.__pending.splice(0).forEach(request => request.reject())");
+    await fresh.waitForFunction(() => document.querySelector(".fanyi-retry"));
+    await fresh.evaluate("__updateSettings({ fontScale: 80, translationFirst: true })");
+    expect(await placement()).toEqual(expected);
+    expect(await fresh.locator("#copy").evaluate((element) => element.firstChild?.textContent)).toBe("Read the guide.");
+    await fresh.evaluate("window.__holdRequests = false");
+    await fresh.locator(".fanyi-retry").click();
+    await fresh.waitForFunction(() => document.querySelector("#copy")?.textContent === "译文 Read the guide.");
+    await fresh.close();
+  });
+
+  it("releases removed paragraphs, restores reusable nodes and keeps connected translations", async () => {
+    const fresh = await openInPlace('<p id="copy">Read <a id="link" href="#">the guide</a>.</p><p id="kept">Keep this paragraph.</p>');
+    await fresh.evaluate("window.__released = 0; const remove = Set.prototype.delete; Set.prototype.delete = function(value) { if (value?.element?.id === 'copy') window.__released++; return remove.call(this, value); }; __toggleAsync()");
+    await finished(fresh);
+    await fresh.evaluate("window.__removed = document.querySelector('#copy'); window.__removed.remove()");
+    await fresh.waitForFunction("window.__released === 1");
+    expect(await fresh.evaluate("window.__removed.textContent")).toBe("Read the guide.");
+    expect(await fresh.evaluate("window.__removed.hasAttribute('data-fanyi-processed')")).toBe(false);
+    expect(await fresh.locator("#kept").textContent()).toBe("译文 Keep this paragraph.");
+    expect(await fresh.evaluate("__state()")).toMatchObject({ translatedCount: 1 });
+    await fresh.evaluate("document.querySelector('.site').append(window.__removed)");
+    await fresh.waitForFunction(() => document.querySelector("#link")?.textContent === "译文 the guide");
+    expect(await fresh.evaluate("__state()")).toMatchObject({ translatedCount: 2 });
+    await fresh.evaluate("__toggleAsync()");
+    expect(await fresh.locator("#copy").textContent()).toBe("Read the guide.");
+    expect(await fresh.locator("#kept").textContent()).toBe("Keep this paragraph.");
+    await fresh.close();
+  });
+
+  it("drops removed text fragments without overwriting website changes or losing the remaining originals", async () => {
+    const fresh = await openInPlace('<p id="copy">Read <span id="fragment"><a id="link" href="#">the guide</a><em id="changed">today</em></span> then continue.</p>');
+    await fresh.evaluate("const add = Set.prototype.add; Set.prototype.add = function(value) { if (value?.element?.id === 'copy') window.__record = value; return add.call(this, value); }; __toggleAsync()");
+    await finished(fresh);
+    expect(await fresh.evaluate("window.__record.parts.length")).toBe(4);
+    await fresh.evaluate("document.querySelector('#changed').firstChild.data = 'Website update'; window.__removed = document.querySelector('#fragment'); window.__removed.remove()");
+    await fresh.waitForFunction("window.__record.parts.length === 2");
+    expect(await fresh.evaluate("window.__removed.querySelector('#link').textContent")).toBe("the guide");
+    expect(await fresh.evaluate("window.__removed.querySelector('#changed').textContent")).toBe("Website update");
+    expect(await fresh.evaluate("__state()")).toMatchObject({ translatedCount: 1 });
+    await fresh.evaluate("__toggleAsync()");
+    expect(await fresh.locator("#copy").textContent()).toBe("Read  then continue.");
+    await fresh.close();
+  });
+
   it("translates newly inserted paragraphs and only restores text still owned by the extension", async () => {
     const fresh = await openInPlace('<p id="copy">Read the guide.</p><p id="changed">Keep up with the news.</p>');
     await fresh.evaluate("__toggleAsync()");

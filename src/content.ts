@@ -76,6 +76,10 @@ let failureStreak = 0;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active) return;
+  const hasRemovedContent = mutations.some((mutation) => Array.from(mutation.removedNodes).some((node) =>
+    !(mutation.target instanceof Element && mutation.target.closest(".fanyi-translation, [data-fanyi-root]"))
+    && (node instanceof Text || (node instanceof Element && !node.matches(".fanyi-translation, [data-fanyi-root]")))));
+  if (hasRemovedContent) pruneInPlaceTranslations();
   const hasNewContent = mutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !node.closest(".fanyi-translation, [data-fanyi-root]")));
   if (!hasNewContent) return;
   window.clearTimeout(mutationTimer);
@@ -98,6 +102,7 @@ const visibilityObserver = new IntersectionObserver((entries) => {
 }, { rootMargin: "50% 0px" });
 
 function pageState(): PageStateResponse {
+  pruneInPlaceTranslations();
   return {
     // 正在翻译的页面一律报告开关已开，开关的写入是异步的，中途广播的状态不能倒退回未开启
     enabled: settings.pageTranslationEnabled || pageTranslationOn(),
@@ -205,6 +210,10 @@ function canHoldTranslation(source: HTMLElement): boolean {
   return source.scrollHeight <= source.clientHeight + 1;
 }
 
+function translationPosition(): "before" | "after" {
+  return settings.translationStyle !== "in-place" && settings.translationFirst ? "before" : "after";
+}
+
 function moveTranslationOutside(source: HTMLElement, translation: HTMLElement): void {
   const style = getComputedStyle(source);
   const copied = [...INHERITED_TEXT_PROPERTIES];
@@ -212,7 +221,7 @@ function moveTranslationOutside(source: HTMLElement, translation: HTMLElement): 
   if (style.backgroundColor !== "rgba(0, 0, 0, 0)" || style.backgroundImage !== "none") copied.push("background", "padding");
   for (const property of copied) translation.style.setProperty(property, style.getPropertyValue(property), "important");
   translation.style.setProperty("font-size", `calc(${style.fontSize} * var(--fanyi-font-scale, .95))`, "important");
-  source.insertAdjacentElement(settings.translationFirst ? "beforebegin" : "afterend", translation);
+  source.insertAdjacentElement(translation.dataset.position === "before" ? "beforebegin" : "afterend", translation);
 }
 
 function settleTranslation(source: HTMLElement, translation: HTMLElement): void {
@@ -220,9 +229,9 @@ function settleTranslation(source: HTMLElement, translation: HTMLElement): void 
 }
 
 function placeTranslation(source: HTMLElement, translation: HTMLElement): void {
-  translation.dataset.position = settings.translationFirst ? "before" : "after";
+  translation.dataset.position = translationPosition();
   // 先放进原文内部以继承排版；被裁剪或处于 flex/grid 时外置并复制文字样式
-  if (settings.translationFirst) source.prepend(translation);
+  if (translation.dataset.position === "before") source.prepend(translation);
   else source.append(translation);
   settleTranslation(source, translation);
 }
@@ -232,7 +241,7 @@ function createTranslationElement(paragraph: Paragraph): HTMLDivElement {
   translation.className = "fanyi-translation";
   translation.dataset.loading = settings.loadingStyle;
   translation.dataset.style = settings.translationStyle;
-  translation.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
+  translation.style.setProperty("--fanyi-font-scale", String(settings.translationStyle === "in-place" ? 1 : settings.fontScale / 100));
   paragraphOf.set(translation, paragraph);
   placeTranslation(paragraph.element, translation);
   return translation;
@@ -286,16 +295,16 @@ function fillInPlace(paragraph: Paragraph, translation: HTMLElement, texts: stri
   });
 }
 
-function applyTranslationStyle(previousStyle = settings.translationStyle): void {
+function applyTranslationStyle(previousStyle: Settings["translationStyle"]): void {
   if ((previousStyle === "in-place") !== (settings.translationStyle === "in-place") && pageTranslationOn()) {
     void translatePage(true);
     return;
   }
   const translations = Array.from(document.querySelectorAll<HTMLElement>(".fanyi-translation"));
-  const position = settings.translationFirst ? "before" : "after";
+  const position = translationPosition();
   translations.forEach((element) => {
     element.dataset.style = settings.translationStyle;
-    element.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
+    element.style.setProperty("--fanyi-font-scale", String(settings.translationStyle === "in-place" ? 1 : settings.fontScale / 100));
     if (element.dataset.loading) element.dataset.loading = settings.loadingStyle;
   });
   // 字号、样式或位置变化后，原本装得下的固定高度原文可能装不下了
@@ -561,16 +570,33 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
   return pageState();
 }
 
+function restoreTextPart({ node, original, translated }: NonNullable<Paragraph["parts"]>[number]): void {
+  // 网页已更新的文字归网页所有，只撤销仍与本轮译文相同的文本。
+  if (translated !== undefined && node.data === translated) node.data = original;
+}
+
+function pruneInPlaceTranslations(): void {
+  inPlaceParagraphs.forEach((paragraph) => {
+    const { element } = paragraph;
+    paragraph.parts = paragraph.parts?.filter((part) => {
+      if (element.isConnected && element.contains(part.node)) return true;
+      // 网页可能重新使用移除的节点，释放快照前先还原扩展仍持有的译文。
+      restoreTextPart(part);
+      return false;
+    });
+    if (paragraph.parts?.length) return;
+    inPlaceParagraphs.delete(paragraph);
+    delete element.dataset.fanyiProcessed;
+  });
+}
+
 function removePageTranslations(): void {
   generation += 1;
   mutationObserver.disconnect();
   visibilityObserver.disconnect();
   waiting.clear();
   queue.length = 0;
-  inPlaceParagraphs.forEach(({ parts }) => parts?.forEach(({ node, original, translated }) => {
-    // 网页已更新的文字归网页所有，只撤销仍与本轮译文相同的文本。
-    if (translated !== undefined && node.data === translated) node.data = original;
-  }));
+  inPlaceParagraphs.forEach(({ parts }) => parts?.forEach(restoreTextPart));
   inPlaceParagraphs.clear();
   document.querySelectorAll(".fanyi-translation").forEach((element) => element.remove());
   document.querySelectorAll<HTMLElement>("[data-fanyi-processed]").forEach((element) => delete element.dataset.fanyiProcessed);
