@@ -982,8 +982,14 @@ describe("in-place translation in a real page", () => {
     await fresh.evaluate("const add = Set.prototype.add; Set.prototype.add = function(value) { if (value?.element?.id === 'copy') window.__record = value; return add.call(this, value); }; __toggleAsync()");
     await finished(fresh);
     expect(await fresh.evaluate("window.__record.parts.length")).toBe(4);
+    await fresh.evaluate("window.__parts = window.__record.parts");
+    for (let index = 0; index < 3; index += 1) {
+      expect(await fresh.evaluate("__state()")).toMatchObject({ translatedCount: 1 });
+      expect(await fresh.evaluate("window.__record.parts === window.__parts")).toBe(true);
+    }
     await fresh.evaluate("document.querySelector('#changed').firstChild.data = 'Website update'; window.__removed = document.querySelector('#fragment'); window.__removed.remove()");
     await fresh.waitForFunction("window.__record.parts.length === 2");
+    expect(await fresh.evaluate("window.__record.parts === window.__parts")).toBe(true);
     expect(await fresh.evaluate("window.__removed.querySelector('#link').textContent")).toBe("the guide");
     expect(await fresh.evaluate("window.__removed.querySelector('#changed').textContent")).toBe("Website update");
     expect(await fresh.evaluate("__state()")).toMatchObject({ translatedCount: 1 });

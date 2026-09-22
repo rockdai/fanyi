@@ -76,11 +76,10 @@ let failureStreak = 0;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active) return;
-  const hasRemovedContent = mutations.some((mutation) => Array.from(mutation.removedNodes).some((node) =>
-    !(mutation.target instanceof Element && mutation.target.closest(".fanyi-translation, [data-fanyi-root]"))
-    && (node instanceof Text || (node instanceof Element && !node.matches(".fanyi-translation, [data-fanyi-root]")))));
-  if (hasRemovedContent) pruneInPlaceTranslations();
-  const hasNewContent = mutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !node.closest(".fanyi-translation, [data-fanyi-root]")));
+  const hasRemovedContent = inPlaceParagraphs.size > 0 && mutations.some(({ target, removedNodes }) =>
+    !isExtensionNode(target) && Array.from(removedNodes).some((node) => (node instanceof Text || node instanceof Element) && !isExtensionNode(node)));
+  if (hasRemovedContent) refreshInPlaceTranslations();
+  const hasNewContent = mutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !isExtensionNode(node)));
   if (!hasNewContent) return;
   window.clearTimeout(mutationTimer);
   mutationTimer = window.setTimeout(() => void translatePage(false), 700);
@@ -101,22 +100,26 @@ const visibilityObserver = new IntersectionObserver((entries) => {
   drainQueue();
 }, { rootMargin: "50% 0px" });
 
-function pageState(): PageStateResponse {
-  pruneInPlaceTranslations();
+function isExtensionNode(node: Node): boolean {
+  const element = node instanceof Element ? node : node.parentElement;
+  return Boolean(element?.closest(".fanyi-translation, [data-fanyi-root]"));
+}
+
+function refreshPageState(): PageStateResponse {
+  const inPlaceCount = refreshInPlaceTranslations();
   return {
     // 正在翻译的页面一律报告开关已开，开关的写入是异步的，中途广播的状态不能倒退回未开启
     enabled: settings.pageTranslationEnabled || pageTranslationOn(),
     active,
     translating,
     supported,
-    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading]):not([data-error])").length
-      + Array.from(inPlaceParagraphs).filter(({ element, parts }) => element.isConnected && parts?.some(({ node, translated }) => translated !== undefined && element.contains(node) && node.data === translated)).length,
+    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading]):not([data-error])").length + inPlaceCount,
   };
 }
 
 function notifyState(): void {
   if (!topFrame) return;
-  void chrome.runtime.sendMessage({ type: "PAGE_STATE_CHANGED", state: pageState() } satisfies RuntimeMessage).catch(() => undefined);
+  void chrome.runtime.sendMessage({ type: "PAGE_STATE_CHANGED", state: refreshPageState() } satisfies RuntimeMessage).catch(() => undefined);
 }
 
 function extractText(element: HTMLElement): string {
@@ -402,12 +405,13 @@ async function translateBatch(current: Run): Promise<void> {
   const placeholders = batch.map((paragraph) => createTranslationElement(paragraph));
   try {
     const texts = batch.flatMap(({ text, parts }) => parts ? parts.map((part) => part.text) : [text]);
+    const counts = batch.map(({ parts }) => parts?.length ?? 1);
     const translations = await requestTranslations(texts, settings.sourceLanguage, settings.targetLanguage, { detectTargetLanguage: settings.detectSameLanguage }, () => run === current, pageRequests);
     // 停止或重启后这一轮已被丢弃，旧结果不能碰新队列和新占位符
     if (run !== current) return;
     let cursor = 0;
     batch.forEach((paragraph, index) => {
-      const results = translations.slice(cursor, (cursor += paragraph.parts?.length ?? 1));
+      const results = translations.slice(cursor, (cursor += counts[index]));
       if (paragraph.parts) fillInPlace(paragraph, placeholders[index], results);
       else fillTranslation(placeholders[index], results[0]);
     });
@@ -527,11 +531,11 @@ function translatePage(reset: boolean, scan = startScan()): Promise<PageStateRes
 }
 
 async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateResponse> {
-  if (!supported) return pageState();
+  if (!supported) return refreshPageState();
   // 框架小到读不了就不翻译；若是重启，先把旧译文和运行状态清掉，框架撑开后才会按最新设置重来
   if (!readableFrame()) {
     if (reset) stopTranslation();
-    return pageState();
+    return refreshPageState();
   }
   if (reset) removePageTranslations();
   const starting = reset || !active;
@@ -541,11 +545,11 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
   const paragraphs = collectParagraphs(scan);
   if (starting && settings.detectSameLanguage) {
     const skip = await alreadyInTargetLanguage(paragraphs.slice(0, 20));
-    if (currentGeneration !== generation) return pageState();
+    if (currentGeneration !== generation) return refreshPageState();
     if (skip) {
       // 正文可能在框架里，顶层自己不需要翻译不代表整页不需要
       if (!window.frames.length) showNotice("页面语言与目标语言相同，无需翻译");
-      return pageState();
+      return refreshPageState();
     }
   }
 
@@ -567,7 +571,7 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
       if (active && currentGeneration === generation) void translatePage(false, scan);
     });
   }
-  return pageState();
+  return refreshPageState();
 }
 
 function restoreTextPart({ node, original, translated }: NonNullable<Paragraph["parts"]>[number]): void {
@@ -575,19 +579,30 @@ function restoreTextPart({ node, original, translated }: NonNullable<Paragraph["
   if (translated !== undefined && node.data === translated) node.data = original;
 }
 
-function pruneInPlaceTranslations(): void {
+function refreshInPlaceTranslations(): number {
+  let count = 0;
   inPlaceParagraphs.forEach((paragraph) => {
     const { element } = paragraph;
-    paragraph.parts = paragraph.parts?.filter((part) => {
-      if (element.isConnected && element.contains(part.node)) return true;
-      // 网页可能重新使用移除的节点，释放快照前先还原扩展仍持有的译文。
-      restoreTextPart(part);
-      return false;
-    });
-    if (paragraph.parts?.length) return;
-    inPlaceParagraphs.delete(paragraph);
-    delete element.dataset.fanyiProcessed;
+    const parts = paragraph.parts ?? [];
+    let retained = 0;
+    let translated = false;
+    for (const part of parts) {
+      if (element.isConnected && element.contains(part.node)) {
+        parts[retained++] = part;
+        translated ||= part.translated !== undefined && part.node.data === part.translated;
+      } else {
+        // 网页可能重新使用移除的节点，释放快照前先还原扩展仍持有的译文。
+        restoreTextPart(part);
+      }
+    }
+    parts.length = retained;
+    if (!retained) {
+      inPlaceParagraphs.delete(paragraph);
+      delete element.dataset.fanyiProcessed;
+    }
+    if (translated) count += 1;
   });
+  return count;
 }
 
 function removePageTranslations(): void {
@@ -630,14 +645,14 @@ async function togglePage(): Promise<PageStateResponse> {
   if (settings.pageTranslationEnabled || pageTranslationOn()) {
     settings = await saveSettings({ pageTranslationEnabled: false });
     stopTranslation();
-    return pageState();
+    return refreshPageState();
   }
   // 先启动再写开关：translatePage 会同步登记 startup，本框架不会被存储回调重复启动
   // 顶层自己可能因为语言相同而不翻译，但正文可能在框架里，开关仍然要打开
   const running = translatePage(false);
   settings = await saveSettings({ pageTranslationEnabled: true });
   await running;
-  return pageState();
+  return refreshPageState();
 }
 
 function selectionStyles(): string {
@@ -831,7 +846,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   // 弹窗、快捷键和右键菜单都只问顶层框架，子框架应答会让回复取决于哪个框架先返回
   if (!topFrame && message.type !== "TRANSLATE_CURRENT_SELECTION" && message.type !== "SHOW_SELECTION_TRANSLATION") return false;
   if (message.type === "GET_PAGE_STATE") {
-    sendResponse(pageState());
+    sendResponse(refreshPageState());
     return false;
   }
   if (message.type === "TOGGLE_PAGE") {
@@ -851,7 +866,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
       const previousStyle = settings.translationStyle;
       settings = nextSettings;
       applyTranslationStyle(previousStyle);
-      sendResponse(pageState());
+      sendResponse(refreshPageState());
     });
     return true;
   }
