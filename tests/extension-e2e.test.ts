@@ -319,6 +319,51 @@ describe("the built extension in Chrome", () => {
     await askActiveTab("TOGGLE_PAGE");
   }, 30000);
 
+  it("saves the in-place style from options, applies it live in every frame and restores the originals", async () => {
+    await askActiveTab("TOGGLE_PAGE");
+    await settled(6);
+    const options = await openOptions("appearance");
+    await options.locator("label:has(input[value='in-place'])").click();
+    await page.waitForFunction((text) => document.querySelector("#lead")?.textContent === text, `译文 ${LEAD}`);
+    expect(await page.title()).toBe(`译文 ${TITLE}`);
+    expect(await page.locator(".fanyi-translation").count()).toBe(0);
+    await page.bringToFront();
+    expect(await askActiveTab("GET_PAGE_STATE")).toMatchObject({ active: true, translatedCount: 6 });
+
+    await options.reload();
+    await options.waitForFunction(() => document.querySelector<HTMLInputElement>("input[value='in-place']")?.checked);
+    for (const key of ["fontScale", "translationFirst", "sentenceBreaks"]) {
+      expect(await options.locator(`[data-setting='${key}']`).isDisabled()).toBe(true);
+    }
+    expect(await options.locator("[data-setting='loadingStyle']").isEnabled()).toBe(true);
+    for (const width of [880, 1280]) {
+      await options.setViewportSize({ width, height: 900 });
+      const cards = await options.locator(".preview-card").evaluateAll((elements) => elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, top: rect.top, right: rect.right, width: rect.width };
+      }));
+      expect(cards).toHaveLength(4);
+      expect(cards.every((card) => card.width > 150 && card.right <= width)).toBe(true);
+      expect(cards[0].top).toBe(cards[1].top);
+      expect(cards[2].top).toBe(cards[3].top);
+      expect(cards[2].top).toBeGreaterThan(cards[0].top);
+    }
+
+    const framed = await context.newPage();
+    await framed.goto(`${origin}/frames`);
+    await expect.poll(() => Promise.all(framed.frames().slice(1).map((frame) => frame.locator("#inner").textContent())), { timeout: 15000 }).toEqual(Array(3).fill(`译文 ${FRAMED_TEXT}`));
+    expect(await askActiveTab("TOGGLE_PAGE")).toMatchObject({ active: false });
+    await expect.poll(() => Promise.all(framed.frames().slice(1).map((frame) => frame.locator("#inner").textContent()))).toEqual(Array(3).fill(FRAMED_TEXT));
+    await expect.poll(() => page.locator("#lead").textContent()).toBe(LEAD);
+    expect(await page.title()).toBe(TITLE);
+    await framed.close();
+
+    await options.locator("label:has(input[value='soft'])").click();
+    await expect.poll(() => options.locator("[data-setting='fontScale']").isEnabled()).toBe(true);
+    await options.close();
+    await page.bringToFront();
+  }, 30000);
+
   it("requests only the paragraphs that are new and keeps every translation on its own paragraph", async () => {
     // 新段落夹在已缓存的段落之间，同一批请求里既有命中也有未命中，回填时必须按原位置归位
     await page.evaluate(([first, second]) => {

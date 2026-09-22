@@ -1,5 +1,5 @@
 export type TranslationProvider = "google" | "openai";
-export type TranslationStyle = "soft" | "underline" | "card";
+export type TranslationStyle = "soft" | "underline" | "card" | "in-place";
 export type SelectionTrigger = "auto" | "button";
 export type LoadingStyle = "spinner" | "none";
 export type ApiVendor = "none" | "openai" | "deepseek" | "kimi" | "zhipu" | "qwen" | "gemini" | "openrouter" | "vllm";
