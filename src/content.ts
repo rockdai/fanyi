@@ -76,10 +76,11 @@ let failureStreak = 0;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active) return;
-  const hasRemovedContent = inPlaceParagraphs.size > 0 && mutations.some(({ target, removedNodes }) =>
-    !isExtensionNode(target) && Array.from(removedNodes).some((node) => (node instanceof Text || node instanceof Element) && !isExtensionNode(node)));
+  const contentMutations = mutations.filter(({ target }) => !document.head?.contains(target) && !isExtensionNode(target));
+  const hasRemovedContent = inPlaceParagraphs.size > 0 && contentMutations.some(({ removedNodes }) =>
+    Array.from(removedNodes).some((node) => (node instanceof Text || node instanceof Element) && !isExtensionNode(node)));
   if (hasRemovedContent) refreshInPlaceTranslations();
-  const hasNewContent = mutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !isExtensionNode(node)));
+  const hasNewContent = contentMutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !isExtensionNode(node)));
   if (!hasNewContent) return;
   window.clearTimeout(mutationTimer);
   mutationTimer = window.setTimeout(() => void translatePage(false), 700);
@@ -102,7 +103,7 @@ const visibilityObserver = new IntersectionObserver((entries) => {
 
 function isExtensionNode(node: Node): boolean {
   const element = node instanceof Element ? node : node.parentElement;
-  return Boolean(element?.closest(".fanyi-translation, [data-fanyi-root]"));
+  return Boolean(element?.closest(".fanyi-translation, .fanyi-notice, [data-fanyi-root]"));
 }
 
 function refreshPageState(): PageStateResponse {
@@ -563,7 +564,7 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
   });
   queue.push(...paragraphs.slice(0, eager));
   if (starting && topFrame && settings.translateTitle) void translateTitle();
-  mutationObserver.observe(document.body, { childList: true, subtree: true });
+  mutationObserver.observe(document, { childList: true, subtree: true });
   notifyState();
   drainQueue();
   if (scan.index < scan.elements.length) {
@@ -608,6 +609,7 @@ function refreshInPlaceTranslations(): number {
 function removePageTranslations(): void {
   generation += 1;
   mutationObserver.disconnect();
+  window.clearTimeout(mutationTimer);
   visibilityObserver.disconnect();
   waiting.clear();
   queue.length = 0;
