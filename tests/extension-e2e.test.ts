@@ -3,8 +3,9 @@ import http from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PageStateResponse } from "../src/messages";
+import { DEFAULT_SETTINGS } from "../src/settings";
 
 // 后台 Service Worker 发出的请求默认不经过 Playwright 路由，开启实验开关后才能拦截 Google 接口
 process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = "1";
@@ -858,4 +859,150 @@ describe("the built extension in Chrome", () => {
     expect(aiRequests.at(-1)?.prompt).toBe(`Translate to Simplified Chinese: ${LEAD}`);
     await askActiveTab("TOGGLE_PAGE");
   }, 30000);
+});
+
+describe("options editing while a save completes", () => {
+  let options: Page;
+
+  beforeEach(async () => {
+    await worker.evaluate(async (settings) => {
+      await chrome.storage.local.clear();
+      await chrome.storage.local.set(settings);
+    }, { ...DEFAULT_SETTINGS, provider: "openai", apiModel: "saved-model", excludedSites: ["saved.example"] });
+    options = await openOptions("general");
+    await options.waitForFunction(() => document.querySelector<HTMLInputElement>("#api-model")?.value === "saved-model");
+  });
+
+  afterEach(async () => {
+    await options?.close();
+  });
+
+  async function holdNextSettingsRead(): Promise<void> {
+    await options.evaluate(() => {
+      const storage = chrome.storage.local;
+      const get = storage.get.bind(storage);
+      document.querySelector("#save-state")?.classList.remove("visible");
+      Object.defineProperty(storage, "get", {
+        configurable: true,
+        value: async (keys: null) => {
+          Object.defineProperty(storage, "get", { configurable: true, value: get });
+          const saved = await get(keys);
+          await new Promise<void>((resolve) => {
+            document.addEventListener("release-settings-read", () => resolve(), { once: true });
+            document.documentElement.dataset.settingsReadPending = "true";
+          });
+          return saved;
+        },
+      });
+    });
+  }
+
+  async function saveAndHold(selector: string, value: string): Promise<void> {
+    await holdNextSettingsRead();
+    await setOption(options, selector, value);
+    await options.waitForFunction(() => document.documentElement.dataset.settingsReadPending === "true");
+  }
+
+  async function releaseSave(): Promise<void> {
+    await options.evaluate(() => document.dispatchEvent(new Event("release-settings-read")));
+    await options.waitForFunction(() => document.querySelector("#save-state")?.classList.contains("visible"));
+  }
+
+  it.each([
+    { section: "service", selector: "#api-model", key: "apiModel", draft: "  edited-model  ", saved: "edited-model" },
+    { section: "service", selector: "#api-base-url", key: "apiBaseUrl", draft: "https://edited.example/v1", saved: "https://edited.example/v1" },
+    { section: "service", selector: "#api-key", key: "apiKey", draft: "local-test-key", saved: "local-test-key" },
+    { section: "service", selector: "#extra-body", key: "extraBody", draft: "  {\n  \"max_tokens\": 256\n}  ", saved: "{\n  \"max_tokens\": 256\n}" },
+    { section: "general", selector: "[data-setting='minParagraphLength']", key: "minParagraphLength", draft: "999", saved: 200 },
+    { section: "sites", selector: "#excluded-sites", key: "excludedSites", draft: "  edited.example\n\n second.example  ", saved: ["edited.example", "second.example"] },
+  ])("preserves the focused $key draft and saves it on blur", async ({ section, selector, key, draft, saved }) => {
+    await saveAndHold("[data-setting='eagerCharacters']", "4500");
+    await options.click(`nav button[data-section='${section}']`);
+    const field = options.locator(selector);
+    const storedBefore = await worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key], key);
+    await field.fill(draft);
+    const selection = await field.evaluate((element) => {
+      if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) throw new Error("missing editable field");
+      if (element.selectionStart !== null) element.setSelectionRange(2, 6);
+      return [element.selectionStart, element.selectionEnd];
+    });
+
+    await releaseSave();
+
+    expect(await field.inputValue()).toBe(draft);
+    expect(await field.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await field.evaluate((element) => element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? [element.selectionStart, element.selectionEnd] : [])).toEqual(selection);
+    expect(await worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key], key)).toEqual(storedBefore);
+
+    await field.blur();
+    await expect.poll(() => worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key], key)).toEqual(saved);
+    const rendered = Array.isArray(saved) ? saved.join("\n") : String(saved);
+    await expect.poll(() => field.inputValue()).toBe(rendered);
+    await options.reload();
+    await expect.poll(() => options.locator(selector).inputValue()).toBe(rendered);
+  });
+
+  it("preserves a new edit to the same field while its previous save completes", async () => {
+    await options.click("nav button[data-section='service']");
+    await saveAndHold("#api-model", "first-model");
+    await options.locator("#api-model").fill("second-model");
+
+    await releaseSave();
+
+    expect(await options.locator("#api-model").inputValue()).toBe("second-model");
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get("apiModel")).apiModel)).toBe("first-model");
+    await options.locator("#api-model").blur();
+    await expect.poll(() => worker.evaluate(async () => (await chrome.storage.local.get("apiModel")).apiModel)).toBe("second-model");
+  });
+
+  it("keeps the focused range value and its live percentage together", async () => {
+    await saveAndHold("[data-setting='eagerCharacters']", "4500");
+    await options.click("nav button[data-section='appearance']");
+    await options.locator("#font-scale").evaluate((element) => {
+      if (!(element instanceof HTMLInputElement)) throw new Error("missing font scale");
+      element.focus();
+      element.value = "110";
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await releaseSave();
+
+    expect(await options.locator("#font-scale").inputValue()).toBe("110");
+    expect(await options.locator("#font-scale-output").textContent()).toBe("110%");
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get("fontScale")).fontScale)).toBe(95);
+    await options.locator("#font-scale").dispatchEvent("change");
+    await expect.poll(() => worker.evaluate(async () => (await chrome.storage.local.get("fontScale")).fontScale)).toBe(110);
+  });
+
+  it("still updates provider visibility and in-place control availability after saving", async () => {
+    await options.click("nav button[data-section='service']");
+    for (const provider of ["google", "openai"]) {
+      await options.locator(`label:has(input[name='provider'][value='${provider}'])`).click();
+      await expect.poll(() => worker.evaluate(async () => (await chrome.storage.local.get("provider")).provider)).toBe(provider);
+      await expect.poll(() => options.locator("#openai-settings").isVisible()).toBe(provider === "openai");
+    }
+    await options.click("nav button[data-section='appearance']");
+    for (const style of ["in-place", "soft"]) {
+      await options.locator(`label:has(input[name='translation-style'][value='${style}'])`).click();
+      await expect.poll(() => worker.evaluate(async () => (await chrome.storage.local.get("translationStyle")).translationStyle)).toBe(style);
+      for (const key of ["fontScale", "translationFirst", "sentenceBreaks"]) {
+        await expect.poll(() => options.locator(`[data-setting='${key}']`).isDisabled()).toBe(style === "in-place");
+      }
+    }
+  });
+
+  it("renders stored values on load and lets an explicit reset replace focused drafts", async () => {
+    expect(await options.locator("#api-model").inputValue()).toBe("saved-model");
+    expect(await options.locator("#excluded-sites").inputValue()).toBe("saved.example");
+    await options.click("nav button[data-section='sites']");
+    await options.locator("#excluded-sites").fill("unsaved.example");
+    options.once("dialog", (dialog) => void dialog.accept());
+    await options.evaluate(() => document.querySelector<HTMLButtonElement>("#reset-settings")?.click());
+    await options.waitForFunction(() => document.querySelector("#toast")?.textContent === "已恢复默认设置");
+
+    expect(await options.locator("#excluded-sites").inputValue()).toBe("");
+    expect(await options.locator("#api-model").inputValue()).toBe(DEFAULT_SETTINGS.apiModel);
+    expect(await options.locator("input[name='provider'][value='google']").isChecked()).toBe(true);
+    expect(await worker.evaluate(() => chrome.storage.local.get(null))).toEqual({});
+  });
 });
