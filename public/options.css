@@ -72,10 +72,13 @@ nav button.active > span { color: #25634f; }
 .secondary-button { padding: 8px 13px; border: 1px solid #cfdcd5; border-radius: 8px; color: #315f50; background: white; cursor: pointer; font-size: 12px; font-weight: 700; }
 .secondary-button:disabled { opacity: .5; cursor: wait; }
 #test-result { color: #6e827a; font-size: 12px; }
-.preview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .preview-card { min-height: 135px; padding: 14px; border: 1px solid #dfe7e2; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; transition: .2s; }
 .preview-grid input:checked + .preview-card { border-color: #3f8067; box-shadow: inset 0 0 0 1px #3f8067, 0 7px 18px rgba(43,104,81,.08); }
 .preview-card b { font-size: 13px; }
+.preview-card small { color: #89968f; font-size: 12px; line-height: 1.5; }
+.switch-row:has(input:disabled), .range:disabled { opacity: .5; cursor: default; }
+.switch input:disabled + span { cursor: default; }
 .sample { display: block; color: #34483f; font: 12px/1.6 Georgia, serif; }
 .sample.underline { text-decoration: underline; text-decoration-color: rgba(52,72,63,.3); text-underline-offset: 3px; }
 .sample.card-sample { margin: 0 -2px; padding: 7px; border-left: 2px solid rgba(52,72,63,.4); border-radius: 3px; background: rgba(52,72,63,.06); }

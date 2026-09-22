@@ -95,19 +95,20 @@
 
         <section class="settings-section" id="appearance">
           <div class="settings-card">
-            <div class="card-title"><div><h2>译文样式</h2><p>选择译文在原文旁的呈现方式。</p></div></div>
+            <div class="card-title"><div><h2>译文样式</h2><p>选择双语对照，或用译文原地替换原文。</p></div></div>
             <div class="preview-grid">
               <label><input type="radio" name="translation-style" data-setting="translationStyle" value="soft" /><span class="preview-card"><b>轻柔</b><span class="sample original">Language shapes how we see the world.</span><span class="sample soft">语言塑造了我们看待世界的方式。</span></span></label>
               <label><input type="radio" name="translation-style" data-setting="translationStyle" value="underline" /><span class="preview-card"><b>下划线</b><span class="sample original">Language shapes how we see the world.</span><span class="sample underline">语言塑造了我们看待世界的方式。</span></span></label>
               <label><input type="radio" name="translation-style" data-setting="translationStyle" value="card" /><span class="preview-card"><b>卡片</b><span class="sample original">Language shapes how we see the world.</span><span class="sample card-sample">语言塑造了我们看待世界的方式。</span></span></label>
+              <label><input type="radio" name="translation-style" data-setting="translationStyle" value="in-place" /><span class="preview-card"><b>原地</b><span class="sample">语言塑造了我们看待世界的方式。</span><small>只显示译文，保留网页排版；关闭翻译可恢复原文。</small></span></label>
             </div>
           </div>
           <div class="settings-card">
-            <div class="card-title"><div><h2>译文字号</h2><p>相对于网页原文字号的比例。</p></div><output id="font-scale-output">95%</output></div>
+            <div class="card-title"><div><h2>译文字号</h2><p>相对于网页原文字号的比例。原地样式沿用网页字号。</p></div><output id="font-scale-output">95%</output></div>
             <input id="font-scale" data-setting="fontScale" class="range" type="range" min="80" max="120" step="5" />
           </div>
           <div class="settings-card">
-            <div class="card-title"><div><h2>排版</h2><p>译文在段落中的位置与加载时的表现。</p></div></div>
+            <div class="card-title"><div><h2>排版</h2><p>译文在段落中的位置与加载时的表现。原地样式沿用网页换行，无需设置原文与译文的顺序。</p></div></div>
             <label class="field"><span>Loading 样式</span><select data-setting="loadingStyle"><option value="spinner">转圈动画</option><option value="none">不显示</option></select><small>等待译文加载时的占位表现</small></label>
             <div class="switch-list">
               <label class="switch-row"><span><strong>译文在先，原文随后</strong><small>开启后每个段落的译文显示在原文前面，默认译文在原文之后</small></span><span class="switch"><input data-setting="translationFirst" type="checkbox" /><span></span></span></label>

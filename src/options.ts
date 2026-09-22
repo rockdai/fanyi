@@ -43,7 +43,9 @@ function settingKey(input: SettingInput): keyof Settings {
 }
 
 function renderInput(input: SettingInput): void {
-  const value = settings[settingKey(input)];
+  const key = settingKey(input);
+  const value = settings[key];
+  if (["fontScale", "translationFirst", "sentenceBreaks"].includes(key)) input.disabled = settings.translationStyle === "in-place";
   if (input instanceof HTMLInputElement && input.type === "checkbox") input.checked = value === true;
   else if (input instanceof HTMLInputElement && input.type === "radio") input.checked = input.value === value;
   else input.value = String(value);

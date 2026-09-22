@@ -16,6 +16,7 @@ const HAS_LETTER = /\p{L}/u;
 interface Paragraph {
   element: HTMLElement;
   text: string;
+  parts?: { node: Text; original: string; text: string; translated?: string }[];
 }
 
 interface Scan {
@@ -66,6 +67,7 @@ let selectionButton: HTMLDivElement | null = null;
 const queue: Paragraph[] = [];
 const waiting = new Map<HTMLElement, Paragraph>();
 const paragraphOf = new WeakMap<HTMLElement, Paragraph>();
+const inPlaceParagraphs = new Set<Paragraph>();
 const pageRequests = new Set<() => void>();
 const selectionRequests = new Set<() => void>();
 let run: Run | null = null;
@@ -74,7 +76,10 @@ let failureStreak = 0;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active) return;
-  const hasNewContent = mutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !node.closest(".fanyi-translation, [data-fanyi-root]")));
+  const hasRemovedContent = inPlaceParagraphs.size > 0 && mutations.some(({ target, removedNodes }) =>
+    !isExtensionNode(target) && Array.from(removedNodes).some((node) => (node instanceof Text || node instanceof Element) && !isExtensionNode(node)));
+  if (hasRemovedContent) refreshInPlaceTranslations();
+  const hasNewContent = mutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !isExtensionNode(node)));
   if (!hasNewContent) return;
   window.clearTimeout(mutationTimer);
   mutationTimer = window.setTimeout(() => void translatePage(false), 700);
@@ -95,20 +100,26 @@ const visibilityObserver = new IntersectionObserver((entries) => {
   drainQueue();
 }, { rootMargin: "50% 0px" });
 
-function pageState(): PageStateResponse {
+function isExtensionNode(node: Node): boolean {
+  const element = node instanceof Element ? node : node.parentElement;
+  return Boolean(element?.closest(".fanyi-translation, [data-fanyi-root]"));
+}
+
+function refreshPageState(): PageStateResponse {
+  const inPlaceCount = refreshInPlaceTranslations();
   return {
     // 正在翻译的页面一律报告开关已开，开关的写入是异步的，中途广播的状态不能倒退回未开启
     enabled: settings.pageTranslationEnabled || pageTranslationOn(),
     active,
     translating,
     supported,
-    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading]):not([data-error])").length,
+    translatedCount: document.querySelectorAll(".fanyi-translation:not([data-loading]):not([data-error])").length + inPlaceCount,
   };
 }
 
 function notifyState(): void {
   if (!topFrame) return;
-  void chrome.runtime.sendMessage({ type: "PAGE_STATE_CHANGED", state: pageState() } satisfies RuntimeMessage).catch(() => undefined);
+  void chrome.runtime.sendMessage({ type: "PAGE_STATE_CHANGED", state: refreshPageState() } satisfies RuntimeMessage).catch(() => undefined);
 }
 
 function extractText(element: HTMLElement): string {
@@ -157,6 +168,24 @@ function startScan(): Scan {
   return { elements: Array.from(document.querySelectorAll<HTMLElement>(candidateSelector())), index: 0 };
 }
 
+function textParts(element: HTMLElement): NonNullable<Paragraph["parts"]> {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (node instanceof Element) {
+        const style = getComputedStyle(node);
+        if (node.matches(ALWAYS_SKIPPED) || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_SKIP;
+      }
+      return HAS_LETTER.test(node.textContent ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+    },
+  });
+  const parts: NonNullable<Paragraph["parts"]> = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node instanceof Text) parts.push({ node, original: node.data, text: node.data.replace(/\s+/g, " ").trim() });
+  }
+  return parts;
+}
+
 function collectParagraphs(scan: Scan): Paragraph[] {
   const skip = skipSelector();
   const collected = new Set<HTMLElement>();
@@ -168,8 +197,10 @@ function collectParagraphs(scan: Scan): Paragraph[] {
     if (hasCollectedAncestor(element, collected)) continue;
     const text = translatableText(element, skip);
     if (!text) continue;
+    const parts = settings.translationStyle === "in-place" ? textParts(element) : undefined;
+    if (parts?.length === 0) continue;
     collected.add(element);
-    paragraphs.push({ element, text });
+    paragraphs.push({ element, text, parts });
   }
   return paragraphs;
 }
@@ -182,6 +213,10 @@ function canHoldTranslation(source: HTMLElement): boolean {
   return source.scrollHeight <= source.clientHeight + 1;
 }
 
+function translationPosition(): "before" | "after" {
+  return settings.translationStyle !== "in-place" && settings.translationFirst ? "before" : "after";
+}
+
 function moveTranslationOutside(source: HTMLElement, translation: HTMLElement): void {
   const style = getComputedStyle(source);
   const copied = [...INHERITED_TEXT_PROPERTIES];
@@ -189,7 +224,7 @@ function moveTranslationOutside(source: HTMLElement, translation: HTMLElement): 
   if (style.backgroundColor !== "rgba(0, 0, 0, 0)" || style.backgroundImage !== "none") copied.push("background", "padding");
   for (const property of copied) translation.style.setProperty(property, style.getPropertyValue(property), "important");
   translation.style.setProperty("font-size", `calc(${style.fontSize} * var(--fanyi-font-scale, .95))`, "important");
-  source.insertAdjacentElement(settings.translationFirst ? "beforebegin" : "afterend", translation);
+  source.insertAdjacentElement(translation.dataset.position === "before" ? "beforebegin" : "afterend", translation);
 }
 
 function settleTranslation(source: HTMLElement, translation: HTMLElement): void {
@@ -197,9 +232,9 @@ function settleTranslation(source: HTMLElement, translation: HTMLElement): void 
 }
 
 function placeTranslation(source: HTMLElement, translation: HTMLElement): void {
-  translation.dataset.position = settings.translationFirst ? "before" : "after";
+  translation.dataset.position = translationPosition();
   // 先放进原文内部以继承排版；被裁剪或处于 flex/grid 时外置并复制文字样式
-  if (settings.translationFirst) source.prepend(translation);
+  if (translation.dataset.position === "before") source.prepend(translation);
   else source.append(translation);
   settleTranslation(source, translation);
 }
@@ -209,7 +244,7 @@ function createTranslationElement(paragraph: Paragraph): HTMLDivElement {
   translation.className = "fanyi-translation";
   translation.dataset.loading = settings.loadingStyle;
   translation.dataset.style = settings.translationStyle;
-  translation.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
+  translation.style.setProperty("--fanyi-font-scale", String(settings.translationStyle === "in-place" ? 1 : settings.fontScale / 100));
   paragraphOf.set(translation, paragraph);
   placeTranslation(paragraph.element, translation);
   return translation;
@@ -251,12 +286,28 @@ function fillTranslation(translation: HTMLElement, text: string): void {
   delete translation.dataset.loading;
 }
 
-function applyTranslationStyle(): void {
+function fillInPlace(paragraph: Paragraph, translation: HTMLElement, texts: string[]): void {
+  translation.remove();
+  const { element, parts } = paragraph;
+  if (!parts || !element.isConnected || parts.some(({ node, original }) => !element.contains(node) || node.data !== original)) return;
+  parts.forEach((part, index) => {
+    if (part.text === texts[index]) return;
+    part.translated = part.original.replace(/\S[\s\S]*\S|\S/u, () => texts[index]);
+    part.node.data = part.translated;
+    inPlaceParagraphs.add(paragraph);
+  });
+}
+
+function applyTranslationStyle(previousStyle: Settings["translationStyle"]): void {
+  if ((previousStyle === "in-place") !== (settings.translationStyle === "in-place") && pageTranslationOn()) {
+    void translatePage(true);
+    return;
+  }
   const translations = Array.from(document.querySelectorAll<HTMLElement>(".fanyi-translation"));
-  const position = settings.translationFirst ? "before" : "after";
+  const position = translationPosition();
   translations.forEach((element) => {
     element.dataset.style = settings.translationStyle;
-    element.style.setProperty("--fanyi-font-scale", String(settings.fontScale / 100));
+    element.style.setProperty("--fanyi-font-scale", String(settings.translationStyle === "in-place" ? 1 : settings.fontScale / 100));
     if (element.dataset.loading) element.dataset.loading = settings.loadingStyle;
   });
   // 字号、样式或位置变化后，原本装得下的固定高度原文可能装不下了
@@ -305,7 +356,12 @@ function sendTranslationRequest(texts: string[], sourceLanguage: string, targetL
 
 async function requestTranslations(texts: string[], sourceLanguage: string, targetLanguage: string, options: { detectTargetLanguage: boolean }, stillWanted: () => boolean, requests: Set<() => void>): Promise<string[]> {
   // 正文、标题、划词都经过这里：超长文本拆段、按段落数和字符数分批，再按原顺序回组
-  const unnecessary = await Promise.all(texts.map((text) => translationUnnecessary(text, sourceLanguage, targetLanguage, options.detectTargetLanguage)));
+  const unnecessary: boolean[] = [];
+  while (unnecessary.length < texts.length) {
+    if (!stillWanted()) throw new Error("翻译已取消");
+    const batch = texts.slice(unnecessary.length, unnecessary.length + settings.maxParagraphsPerRequest);
+    unnecessary.push(...await Promise.all(batch.map((text) => translationUnnecessary(text, sourceLanguage, targetLanguage, options.detectTargetLanguage))));
+  }
   const pieces = texts.map((text, index) => unnecessary[index] ? [] : splitText(text, settings.maxCharsPerRequest));
   const flat = pieces.flat();
   const translated: string[] = [];
@@ -348,10 +404,17 @@ async function translateBatch(current: Run): Promise<void> {
   const batch = queue.splice(0, batchSizeFor(candidates.map(({ text }) => text.length), settings.maxCharsPerRequest));
   const placeholders = batch.map((paragraph) => createTranslationElement(paragraph));
   try {
-    const translations = await requestTranslations(batch.map(({ text }) => text), settings.sourceLanguage, settings.targetLanguage, { detectTargetLanguage: settings.detectSameLanguage }, () => run === current, pageRequests);
+    const texts = batch.flatMap(({ text, parts }) => parts ? parts.map((part) => part.text) : [text]);
+    const counts = batch.map(({ parts }) => parts?.length ?? 1);
+    const translations = await requestTranslations(texts, settings.sourceLanguage, settings.targetLanguage, { detectTargetLanguage: settings.detectSameLanguage }, () => run === current, pageRequests);
     // 停止或重启后这一轮已被丢弃，旧结果不能碰新队列和新占位符
     if (run !== current) return;
-    placeholders.forEach((placeholder, index) => fillTranslation(placeholder, translations[index]));
+    let cursor = 0;
+    batch.forEach((paragraph, index) => {
+      const results = translations.slice(cursor, (cursor += counts[index]));
+      if (paragraph.parts) fillInPlace(paragraph, placeholders[index], results);
+      else fillTranslation(placeholders[index], results[0]);
+    });
     // 真实译文比占位符长，固定高度的原文可能此时才装不下
     placeholders.forEach((placeholder, index) => settleTranslation(batch[index].element, placeholder));
     failureStreak = 0;
@@ -451,7 +514,7 @@ async function translateTitle(): Promise<void> {
     const [translated] = await requestTranslations([title], settings.sourceLanguage, settings.targetLanguage, { detectTargetLanguage: false }, () => active && currentGeneration === generation, pageRequests);
     // 网页在此期间自己改了标题就不再覆盖
     if (!active || currentGeneration !== generation || !translated || translated === title || document.title !== originalTitle) return;
-    translatedTitle = `${translated} | ${originalTitle}`;
+    translatedTitle = settings.translationStyle === "in-place" ? translated : `${translated} | ${originalTitle}`;
     document.title = translatedTitle;
   } catch {
     // 标题翻译失败不打断正文，正文批次会把同一错误显示给用户
@@ -468,11 +531,11 @@ function translatePage(reset: boolean, scan = startScan()): Promise<PageStateRes
 }
 
 async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateResponse> {
-  if (!supported) return pageState();
+  if (!supported) return refreshPageState();
   // 框架小到读不了就不翻译；若是重启，先把旧译文和运行状态清掉，框架撑开后才会按最新设置重来
   if (!readableFrame()) {
     if (reset) stopTranslation();
-    return pageState();
+    return refreshPageState();
   }
   if (reset) removePageTranslations();
   const starting = reset || !active;
@@ -482,11 +545,11 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
   const paragraphs = collectParagraphs(scan);
   if (starting && settings.detectSameLanguage) {
     const skip = await alreadyInTargetLanguage(paragraphs.slice(0, 20));
-    if (currentGeneration !== generation) return pageState();
+    if (currentGeneration !== generation) return refreshPageState();
     if (skip) {
       // 正文可能在框架里，顶层自己不需要翻译不代表整页不需要
       if (!window.frames.length) showNotice("页面语言与目标语言相同，无需翻译");
-      return pageState();
+      return refreshPageState();
     }
   }
 
@@ -508,7 +571,38 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
       if (active && currentGeneration === generation) void translatePage(false, scan);
     });
   }
-  return pageState();
+  return refreshPageState();
+}
+
+function restoreTextPart({ node, original, translated }: NonNullable<Paragraph["parts"]>[number]): void {
+  // 网页已更新的文字归网页所有，只撤销仍与本轮译文相同的文本。
+  if (translated !== undefined && node.data === translated) node.data = original;
+}
+
+function refreshInPlaceTranslations(): number {
+  let count = 0;
+  inPlaceParagraphs.forEach((paragraph) => {
+    const { element } = paragraph;
+    const parts = paragraph.parts ?? [];
+    let retained = 0;
+    let translated = false;
+    for (const part of parts) {
+      if (element.isConnected && element.contains(part.node)) {
+        parts[retained++] = part;
+        translated ||= part.translated !== undefined && part.node.data === part.translated;
+      } else {
+        // 网页可能重新使用移除的节点，释放快照前先还原扩展仍持有的译文。
+        restoreTextPart(part);
+      }
+    }
+    parts.length = retained;
+    if (!retained) {
+      inPlaceParagraphs.delete(paragraph);
+      delete element.dataset.fanyiProcessed;
+    }
+    if (translated) count += 1;
+  });
+  return count;
 }
 
 function removePageTranslations(): void {
@@ -517,6 +611,8 @@ function removePageTranslations(): void {
   visibilityObserver.disconnect();
   waiting.clear();
   queue.length = 0;
+  inPlaceParagraphs.forEach(({ parts }) => parts?.forEach(restoreTextPart));
+  inPlaceParagraphs.clear();
   document.querySelectorAll(".fanyi-translation").forEach((element) => element.remove());
   document.querySelectorAll<HTMLElement>("[data-fanyi-processed]").forEach((element) => delete element.dataset.fanyiProcessed);
   document.querySelector(".fanyi-notice")?.remove();
@@ -549,14 +645,14 @@ async function togglePage(): Promise<PageStateResponse> {
   if (settings.pageTranslationEnabled || pageTranslationOn()) {
     settings = await saveSettings({ pageTranslationEnabled: false });
     stopTranslation();
-    return pageState();
+    return refreshPageState();
   }
   // 先启动再写开关：translatePage 会同步登记 startup，本框架不会被存储回调重复启动
   // 顶层自己可能因为语言相同而不翻译，但正文可能在框架里，开关仍然要打开
   const running = translatePage(false);
   settings = await saveSettings({ pageTranslationEnabled: true });
   await running;
-  return pageState();
+  return refreshPageState();
 }
 
 function selectionStyles(): string {
@@ -750,7 +846,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   // 弹窗、快捷键和右键菜单都只问顶层框架，子框架应答会让回复取决于哪个框架先返回
   if (!topFrame && message.type !== "TRANSLATE_CURRENT_SELECTION" && message.type !== "SHOW_SELECTION_TRANSLATION") return false;
   if (message.type === "GET_PAGE_STATE") {
-    sendResponse(pageState());
+    sendResponse(refreshPageState());
     return false;
   }
   if (message.type === "TOGGLE_PAGE") {
@@ -761,16 +857,16 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     // 发起方先写存储再发消息，storage 变更回调可能更晚到，重启必须自己读一遍最新设置
     void getSettings().then((nextSettings) => {
       settings = nextSettings;
-      applyTranslationStyle();
       return translatePage(true);
     }).then(sendResponse);
     return true;
   }
   if (message.type === "SETTINGS_UPDATED") {
     void getSettings().then((nextSettings) => {
+      const previousStyle = settings.translationStyle;
       settings = nextSettings;
-      applyTranslationStyle();
-      sendResponse(pageState());
+      applyTranslationStyle(previousStyle);
+      sendResponse(refreshPageState());
     });
     return true;
   }
@@ -788,10 +884,11 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   void getSettings().then((nextSettings) => {
+    const previousStyle = settings.translationStyle;
     settings = nextSettings;
     const wasSupported = supported;
     supported = !isSiteExcluded(pageHostname(), settings.excludedSites);
-    applyTranslationStyle();
+    applyTranslationStyle(previousStyle);
     if (!supported) {
       if (active) stopTranslation();
       return;
