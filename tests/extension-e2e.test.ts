@@ -837,6 +837,7 @@ describe("the built extension in Chrome", () => {
     await setOption(options, "#api-base-url", `${origin}/v1`);
     await setOption(options, "#api-key", "local-test-key");
     await setOption(options, "#api-model", "test-model");
+    await expect.poll(() => worker.evaluate(async () => (await chrome.storage.local.get("apiModel")).apiModel)).toBe("test-model");
     await options.close();
 
     aiRejects = true;
