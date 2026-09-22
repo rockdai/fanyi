@@ -42,10 +42,11 @@ function settingKey(input: SettingInput): keyof Settings {
   return key as keyof Settings;
 }
 
-function renderInput(input: SettingInput): void {
+function renderInput(input: SettingInput, focusedInput: Element | null): void {
   const key = settingKey(input);
   const value = settings[key];
   if (["fontScale", "translationFirst", "sentenceBreaks"].includes(key)) input.disabled = settings.translationStyle === "in-place";
+  if (input === focusedInput) return;
   if (input instanceof HTMLInputElement && input.type === "checkbox") input.checked = value === true;
   else if (input instanceof HTMLInputElement && input.type === "radio") input.checked = input.value === value;
   else input.value = String(value);
@@ -63,10 +64,11 @@ function readInput(input: SettingInput): Partial<Settings> {
   return { [key]: value } as Partial<Settings>;
 }
 
-function render(): void {
-  settingInputs.forEach(renderInput);
-  fontScaleOutput.value = `${settings.fontScale}%`;
-  excludedSites.value = settings.excludedSites.join("\n");
+function render(preserveFocusedInput = false): void {
+  const focusedInput = preserveFocusedInput ? document.activeElement : null;
+  settingInputs.forEach((input) => renderInput(input, focusedInput));
+  fontScaleOutput.value = `${fontScale.value}%`;
+  if (excludedSites !== focusedInput) excludedSites.value = settings.excludedSites.join("\n");
   openAISettings.style.display = settings.provider === "openai" ? "block" : "none";
 }
 
@@ -83,10 +85,16 @@ function showToast(message: string): void {
   toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 2200);
 }
 
-async function persist(patch: Partial<Settings>): Promise<void> {
+async function persist(patch: Partial<Settings>, input?: SettingInput): Promise<void> {
   if (!ready) return;
+  const committedValue = input?.value;
+  const committedChecked = input instanceof HTMLInputElement ? input.checked : undefined;
   settings = await saveSettings(patch);
-  render();
+  render(true);
+  if (input && input === document.activeElement && input.value === committedValue &&
+    (!(input instanceof HTMLInputElement) || input.checked === committedChecked)) {
+    renderInput(input, null);
+  }
   flashSaved();
 }
 
@@ -101,7 +109,7 @@ document.querySelectorAll<HTMLButtonElement>("nav button[data-section]").forEach
   });
 });
 
-settingInputs.forEach((input) => input.addEventListener("change", () => void persist(readInput(input))));
+settingInputs.forEach((input) => input.addEventListener("change", () => void persist(readInput(input), input)));
 excludedSites.addEventListener("change", () => void persist({ excludedSites: excludedSites.value.split("\n").map((site) => site.trim()).filter(Boolean) }));
 fontScale.addEventListener("input", () => {
   fontScaleOutput.value = `${fontScale.value}%`;
