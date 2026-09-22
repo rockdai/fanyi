@@ -76,9 +76,14 @@ let failureStreak = 0;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active) return;
-  const hasRemovedContent = inPlaceParagraphs.size > 0 && mutations.some((mutation) =>
+  const hasRemovedContent = (inPlaceParagraphs.size > 0 || waiting.size > 0) && mutations.some((mutation) =>
     mutation.removedNodes.length > 0 && isContentMutation(mutation) && Array.from(mutation.removedNodes).some((node) => (node instanceof Text || node instanceof Element) && !isExtensionNode(node)));
-  if (hasRemovedContent) refreshInPlaceTranslations();
+  if (hasRemovedContent) {
+    for (const element of waiting.keys()) {
+      if (!element.isConnected) removeWaitingParagraph(element);
+    }
+    refreshInPlaceTranslations();
+  }
   const hasNewContent = mutations.some((mutation) =>
     mutation.addedNodes.length > 0 && isContentMutation(mutation) && Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !isExtensionNode(node)));
   if (!hasNewContent) return;
@@ -87,12 +92,13 @@ const mutationObserver = new MutationObserver((mutations) => {
 });
 
 const visibilityObserver = new IntersectionObserver((entries) => {
-  const visible = entries.filter((entry) => entry.isIntersecting).flatMap((entry) => {
+  const visible = entries.flatMap((entry) => {
     const paragraph = entry.target instanceof HTMLElement ? waiting.get(entry.target) : undefined;
     if (!paragraph) return [];
-    waiting.delete(paragraph.element);
-    visibilityObserver.unobserve(paragraph.element);
-    return [paragraph];
+    const connected = paragraph.element.isConnected;
+    if (!entry.isIntersecting && connected) return [];
+    removeWaitingParagraph(paragraph.element);
+    return connected ? [paragraph] : [];
   });
   if (!visible.length) return;
   // 用户刚滚到的段落优先；连续失败的暂停也由这次滚动解除，服务没恢复就只多失败这一批
@@ -100,6 +106,12 @@ const visibilityObserver = new IntersectionObserver((entries) => {
   failureStreak = 0;
   drainQueue();
 }, { rootMargin: "50% 0px" });
+
+function removeWaitingParagraph(element: HTMLElement): void {
+  waiting.delete(element);
+  visibilityObserver.unobserve(element);
+  if (!element.isConnected) delete element.dataset.fanyiProcessed;
+}
 
 function isExtensionNode(node: Node): boolean {
   const element = node instanceof Element ? node : node.parentElement;
@@ -547,7 +559,7 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
   // 每次启动都换一个代次，仍在等语言检测的更早启动会在检测返回后自行放弃
   if (starting) generation += 1;
   const currentGeneration = generation;
-  const paragraphs = collectParagraphs(scan);
+  let paragraphs = collectParagraphs(scan);
   if (starting && settings.detectSameLanguage) {
     const skip = await alreadyInTargetLanguage(paragraphs.slice(0, 20));
     if (currentGeneration !== generation) return refreshPageState();
@@ -558,6 +570,7 @@ async function startTranslation(reset: boolean, scan: Scan): Promise<PageStateRe
     }
   }
 
+  paragraphs = paragraphs.filter(({ element }) => element.isConnected);
   active = true;
   paragraphs.forEach(({ element }) => element.dataset.fanyiProcessed = "true");
   // 首屏字符预算内的段落立即翻译，其余等滚动到可视区域附近再翻译

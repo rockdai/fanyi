@@ -219,10 +219,11 @@ let page: Page;
 let bundleText: string;
 let css: string;
 
-async function openPage(settingsLiteral: string): Promise<Page> {
+async function openPage(settingsLiteral: string, beforeContent?: (fresh: Page) => Promise<void>): Promise<Page> {
   const fresh = await browser.newPage();
   await fresh.setContent(FIXTURE.replace('const settings = { sourceLanguage: "de", targetLanguage: "en" };', `const settings = ${settingsLiteral};`));
   await fresh.addStyleTag({ content: css });
+  await beforeContent?.(fresh);
   await fresh.addScriptTag({ content: bundleText });
   return fresh;
 }
@@ -1223,6 +1224,163 @@ describe("in-place translation in a real page", () => {
     expect(requests.flat()).not.toContain("12345");
     expect(requests.flat()).not.toContain("Already in English.");
     expect(requests.every((texts) => texts.length <= 4 && texts.join("").length <= 100)).toBe(true);
+    await fresh.close();
+  });
+});
+
+describe("lazy paragraph lifetime in a real page", () => {
+  const opening = "Opening notes. ".repeat(333) + "End.";
+  const openLazy = async (translationStyle = "in-place") => {
+    const fresh = await openPage(JSON.stringify({ sourceLanguage: "de", targetLanguage: "en", translationStyle, translateTitle: false, detectSameLanguage: false }), async (fresh) => {
+      await fresh.evaluate(() => {
+        const set = Map.prototype.set;
+        Map.prototype.set = function (key, value) {
+          if (key instanceof HTMLElement && value?.element === key) Object.assign(window, { __waiting: this });
+          return set.call(this, key, value);
+        };
+        const observed = new Set<Element>();
+        const registrations: string[] = [];
+        const visibilityEntries = new Set<string>();
+        Object.assign(window, { __observed: observed, __registrations: registrations, __visibilityEntries: visibilityEntries });
+        window.IntersectionObserver = class extends IntersectionObserver {
+          constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+            super((entries, observer) => {
+              entries.forEach(({ target }) => visibilityEntries.add(target.id));
+              callback(entries, observer);
+            }, options);
+            Object.assign(window, { __emitVisibility: (target: Element, isIntersecting: boolean) => callback([{
+              target, isIntersecting, intersectionRatio: isIntersecting ? 1 : 0,
+              time: performance.now(), boundingClientRect: target.getBoundingClientRect(), intersectionRect: new DOMRect(), rootBounds: null,
+            }], this) });
+          }
+          observe(target: Element): void {
+            observed.add(target);
+            registrations.push(target.id);
+            super.observe(target);
+          }
+          unobserve(target: Element): void {
+            observed.delete(target);
+            super.unobserve(target);
+          }
+          disconnect(): void {
+            observed.clear();
+            super.disconnect();
+          }
+        };
+      });
+    });
+    await fresh.locator(".site").evaluate((site, opening) => {
+      site.innerHTML = '<p id="opening"></p><div style="height: 2500px"></div><section id="waiting-group"><p id="deferred">Read <a id="deferred-link" href="#">the later chapter.</a></p></section><p id="kept">Keep this later paragraph.</p>';
+      const first = site.querySelector("#opening");
+      if (!first) throw new Error("missing opening");
+      first.textContent = opening;
+    }, opening);
+    await fresh.evaluate((texts) => Object.assign(window, { __unchanged: texts }), splitText(opening, 2000));
+    return fresh;
+  };
+  const started = async (fresh: Page) => {
+    await fresh.evaluate("__toggleAsync()");
+    await fresh.waitForFunction("window.__waiting?.size === 2 && window.__observed.size === 2 && !document.querySelector('.fanyi-translation')");
+    await fresh.waitForFunction("window.__visibilityEntries.has('deferred') && window.__visibilityEntries.has('kept')");
+    expect(await fresh.evaluate("__state()")).toMatchObject({ active: true, translating: false, translatedCount: 0 });
+    await fresh.evaluate("window.__sent.length = 0");
+  };
+
+  it.each(["in-place", "soft"])("releases removed waiting paragraphs and observes reused nodes with fresh text in %s mode", async (style) => {
+    const fresh = await openLazy(style);
+    await started(fresh);
+    await fresh.evaluate("window.__removed = document.querySelector('#waiting-group'); window.__removed.remove()");
+    await fresh.waitForFunction("window.__waiting.size === 1 && window.__observed.size === 1", undefined, { timeout: 2000 });
+    expect(await fresh.evaluate("window.__removed.querySelector('#deferred').hasAttribute('data-fanyi-processed')")).toBe(false);
+    expect(await fresh.evaluate("window.__waiting.has(document.querySelector('#kept')) && window.__observed.has(document.querySelector('#kept'))")).toBe(true);
+    expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS')")).toEqual([]);
+    await fresh.evaluate("window.__removed.querySelector('#deferred-link').textContent = 'the revised chapter.'; document.querySelector('#kept').before(window.__removed)");
+    await fresh.waitForFunction("window.__waiting.size === 2 && window.__observed.size === 2");
+    await fresh.locator("#deferred").scrollIntoViewIfNeeded();
+    await fresh.waitForFunction(() => document.querySelector("#deferred")?.textContent?.includes("译文"));
+    const texts = await fresh.evaluate<string[]>("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS').flatMap(m => m.texts)");
+    expect(texts.some((text) => text.includes("the revised chapter."))).toBe(true);
+    expect(texts.some((text) => text.includes("the later chapter."))).toBe(false);
+    await fresh.waitForFunction(() => document.querySelector("#kept")?.textContent?.includes("译文"));
+    expect(await fresh.evaluate("window.__waiting.size")).toBe(0);
+    expect(await fresh.evaluate("window.__observed.size")).toBe(0);
+    await fresh.evaluate("__toggleAsync()");
+    expect(await fresh.locator("#deferred").textContent()).toBe("Read the revised chapter.");
+    await fresh.close();
+  });
+
+  it.each(["body", "html"])("unobserves every waiting paragraph when the %s root disappears", async (tag) => {
+    const fresh = await openLazy();
+    await started(fresh);
+    await fresh.evaluate((tag) => {
+      const root = document.querySelector(tag);
+      if (!root) throw new Error(`missing ${tag}`);
+      Object.assign(window, { __removed: root });
+      root.remove();
+    }, tag);
+    await fresh.waitForFunction("window.__waiting.size === 0 && window.__observed.size === 0", undefined, { timeout: 2000, polling: 20 });
+    expect(await fresh.evaluate("window.__removed.querySelector('#deferred').hasAttribute('data-fanyi-processed') || window.__removed.querySelector('#kept').hasAttribute('data-fanyi-processed')")).toBe(false);
+    expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS')")).toEqual([]);
+    await fresh.close();
+  });
+
+  it("bounds waiting and observation counts across repeated lazy page updates", async () => {
+    const fresh = await openLazy("soft");
+    await started(fresh);
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      await fresh.locator("#waiting-group").evaluate((group) => group.replaceChildren());
+      await fresh.waitForFunction("window.__waiting.size === 1 && window.__observed.size === 1", undefined, { timeout: 2000 });
+      await fresh.locator("#waiting-group").evaluate((group, cycle) => {
+        for (let index = 0; index < 6; index += 1) {
+          const paragraph = document.createElement("p");
+          paragraph.textContent = `Article ${cycle} paragraph ${index}.`;
+          group.append(paragraph);
+        }
+      }, cycle);
+      await fresh.waitForFunction("window.__waiting.size === 7 && window.__observed.size === 7");
+    }
+    expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS')")).toEqual([]);
+    await fresh.evaluate("__toggleAsync()");
+    expect(await fresh.evaluate("window.__waiting.size")).toBe(0);
+    expect(await fresh.evaluate("window.__observed.size")).toBe(0);
+    await fresh.close();
+  });
+
+  it("preserves waiting paragraphs moved within the document in the same turn", async () => {
+    const fresh = await openLazy();
+    await started(fresh);
+    await fresh.evaluate("window.__record = window.__waiting.get(document.querySelector('#deferred')); document.querySelector('.site').append(document.querySelector('#waiting-group'))");
+    expect(await fresh.evaluate("window.__waiting.get(document.querySelector('#deferred')) === window.__record")).toBe(true);
+    expect(await fresh.evaluate("window.__observed.size")).toBe(2);
+    expect(await fresh.locator("#deferred").getAttribute("data-fanyi-processed")).toBe("true");
+    await fresh.locator("#deferred").scrollIntoViewIfNeeded();
+    await fresh.waitForFunction(() => document.querySelector("#deferred-link")?.textContent === "译文 the later chapter.");
+    expect(await fresh.evaluate("window.__registrations.filter(id => id === 'deferred').length")).toBe(1);
+    await fresh.close();
+  });
+
+  it("does not register paragraphs removed while startup language detection is pending", async () => {
+    const fresh = await openLazy();
+    await fresh.evaluate("window.__holdDetect = true; window.__detected = 'de'; __updateSettings({ sourceLanguage: 'auto', detectSameLanguage: true })");
+    await fresh.evaluate("__toggle()");
+    await fresh.waitForFunction("window.__detections.length > 0");
+    await fresh.evaluate("document.querySelector('#waiting-group').remove(); window.__holdDetect = false; window.__detections.splice(0).forEach(resolve => resolve())");
+    await fresh.waitForFunction("window.__waiting?.size === 1 && window.__observed.size === 1", undefined, { timeout: 2000 });
+    expect(await fresh.evaluate("window.__registrations")).toEqual(["kept"]);
+    await fresh.close();
+  });
+
+  it.each([true, false])("discards a detached target from an already queued visibility entry (%s)", async (isIntersecting) => {
+    const fresh = await openLazy();
+    await started(fresh);
+    const retained = await fresh.evaluate(`(() => {
+      const target = document.querySelector('#deferred');
+      target.remove();
+      window.__emitVisibility(target, ${isIntersecting});
+      return { waiting: window.__waiting.has(target), observed: window.__observed.has(target), processed: target.hasAttribute('data-fanyi-processed') };
+    })()`);
+    expect(retained).toEqual({ waiting: false, observed: false, processed: false });
+    expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS')")).toEqual([]);
     await fresh.close();
   });
 });
