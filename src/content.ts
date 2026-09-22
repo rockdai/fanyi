@@ -4,7 +4,7 @@ import { chineseScript, DEFAULT_SETTINGS, getSettings, isSameLanguage, isSiteExc
 
 const BLOCK_SELECTOR = "p, li, blockquote, figcaption, h1, h2, h3, h4, h5, h6, td, th, dd";
 const TEXT_SELECTOR = "div, span, a, dt, label, summary, small, strong, em, b, i";
-const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation";
+const ALWAYS_SKIPPED = "script, style, noscript, code, pre, textarea, input, select, button, [contenteditable='true'], [aria-hidden='true'], [data-fanyi-root], .fanyi-translation, .fanyi-notice";
 const MAX_PAGE_BLOCKS = 1000;
 // 检测给的占比按字节统计，换算时也要用字节数：一句话以上的外语正文就值得翻译，几个外来词不算
 const MIN_LANGUAGE_BYTES = 40;
@@ -76,11 +76,11 @@ let failureStreak = 0;
 
 const mutationObserver = new MutationObserver((mutations) => {
   if (!active) return;
-  const contentMutations = mutations.filter(({ target }) => !document.head?.contains(target) && !isExtensionNode(target));
-  const hasRemovedContent = inPlaceParagraphs.size > 0 && contentMutations.some(({ removedNodes }) =>
-    Array.from(removedNodes).some((node) => (node instanceof Text || node instanceof Element) && !isExtensionNode(node)));
+  const hasRemovedContent = inPlaceParagraphs.size > 0 && mutations.some((mutation) =>
+    mutation.removedNodes.length > 0 && isContentMutation(mutation) && Array.from(mutation.removedNodes).some((node) => (node instanceof Text || node instanceof Element) && !isExtensionNode(node)));
   if (hasRemovedContent) refreshInPlaceTranslations();
-  const hasNewContent = contentMutations.some((mutation) => Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !isExtensionNode(node)));
+  const hasNewContent = mutations.some((mutation) =>
+    mutation.addedNodes.length > 0 && isContentMutation(mutation) && Array.from(mutation.addedNodes).some((node) => node instanceof HTMLElement && !isExtensionNode(node)));
   if (!hasNewContent) return;
   window.clearTimeout(mutationTimer);
   mutationTimer = window.setTimeout(() => void translatePage(false), 700);
@@ -104,6 +104,10 @@ const visibilityObserver = new IntersectionObserver((entries) => {
 function isExtensionNode(node: Node): boolean {
   const element = node instanceof Element ? node : node.parentElement;
   return Boolean(element?.closest(".fanyi-translation, .fanyi-notice, [data-fanyi-root]"));
+}
+
+function isContentMutation({ target }: MutationRecord): boolean {
+  return !document.head?.contains(target) && !isExtensionNode(target);
 }
 
 function refreshPageState(): PageStateResponse {

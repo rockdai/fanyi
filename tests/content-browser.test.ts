@@ -1102,6 +1102,51 @@ describe("in-place translation in a real page", () => {
     await fresh.close();
   });
 
+  it.each(["in-place", "soft"])("short-circuits content checks for a burst of added nodes in %s mode", async (translationStyle) => {
+    const fresh = await openInPlace('<p id="copy">Read the guide.</p>');
+    await fresh.evaluate((translationStyle) => chrome.storage.local.set({ translationStyle }), translationStyle);
+    await fresh.evaluate("__toggleAsync()");
+    await finished(fresh);
+    await fresh.evaluate(() => {
+      const closest = Element.prototype.closest;
+      const checks = { count: 0 };
+      Object.assign(window, { __checks: checks });
+      Element.prototype.closest = function (selectors: string) {
+        if (selectors === ".fanyi-translation, .fanyi-notice, [data-fanyi-root]") checks.count += 1;
+        return closest.call(this, selectors);
+      };
+      const site = document.querySelector(".site");
+      if (!site) throw new Error("missing site");
+      for (let index = 0; index < 200; index += 1) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = `New paragraph ${index}.`;
+        site.appendChild(paragraph);
+      }
+    });
+    const checks = await fresh.evaluate<number>("window.__checks.count");
+    expect(checks).toBeGreaterThan(0);
+    expect(checks).toBeLessThanOrEqual(4);
+    await fresh.close();
+  });
+
+  it.each(["in-place", "soft"])("never translates its failure notice during an all-areas rescan in %s mode", async (translationStyle) => {
+    const fresh = await openInPlace('<p id="copy">Read the guide.</p>');
+    await fresh.evaluate((translationStyle) => chrome.storage.local.set({ translationStyle, translateAllAreas: true, translateTitle: false }), translationStyle);
+    await fresh.evaluate("window.__failText = 'Read the guide.'; __toggleAsync()");
+    await fresh.waitForFunction(() => document.querySelector(".fanyi-notice"));
+    await finished(fresh);
+    const notice = await fresh.locator(".fanyi-notice").textContent();
+    expect(notice).toBe("1 个段落翻译失败：request failed on purpose");
+    await fresh.evaluate("window.__notice = document.querySelector('.fanyi-notice'); window.__failText = null; window.__sent.length = 0; document.querySelector('.site').insertAdjacentHTML('beforeend', '<p id=added>Fresh article text.</p>')");
+    await fresh.waitForFunction(() => document.querySelector("#added")?.textContent?.includes("译文 Fresh article text."));
+    await finished(fresh);
+    expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS').flatMap(m => m.texts)")).toEqual(["Fresh article text."]);
+    expect(await fresh.evaluate("window.__notice.textContent")).toBe(notice);
+    expect(await fresh.evaluate("window.__notice.hasAttribute('data-fanyi-processed')")).toBe(false);
+    expect(await fresh.evaluate("window.__notice.querySelector('.fanyi-translation')")).toBeNull();
+    await fresh.close();
+  });
+
   it("translates newly inserted paragraphs and only restores text still owned by the extension", async () => {
     const fresh = await openInPlace('<p id="copy">Read the guide.</p><p id="changed">Keep up with the news.</p>');
     await fresh.evaluate("__toggleAsync()");
