@@ -904,7 +904,10 @@ describe("options editing while a save completes", () => {
   }
 
   async function releaseSave(): Promise<void> {
-    await options.evaluate(() => document.dispatchEvent(new Event("release-settings-read")));
+    await options.evaluate(() => {
+      document.querySelector("#save-state")?.classList.remove("visible");
+      document.dispatchEvent(new Event("release-settings-read"));
+    });
     await options.waitForFunction(() => document.querySelector("#save-state")?.classList.contains("visible"));
   }
 
@@ -953,6 +956,68 @@ describe("options editing while a save completes", () => {
     expect(await worker.evaluate(async () => (await chrome.storage.local.get("apiModel")).apiModel)).toBe("first-model");
     await options.locator("#api-model").blur();
     await expect.poll(() => worker.evaluate(async () => (await chrome.storage.local.get("apiModel")).apiModel)).toBe("second-model");
+  });
+
+  it.each([
+    { section: "service", selector: "#api-model", key: "apiModel", submitted: "  edited-model  ", saved: "edited-model" },
+    { section: "general", selector: "[data-setting='minParagraphLength']", key: "minParagraphLength", submitted: "999", saved: 200 },
+  ])("normalizes an unchanged focused $key after Enter commits it", async ({ section, selector, key, submitted, saved }) => {
+    await options.click(`nav button[data-section='${section}']`);
+    await holdNextSettingsRead();
+    const field = options.locator(selector);
+    await field.fill(submitted);
+    await field.press("Enter");
+    await options.waitForFunction(() => document.documentElement.dataset.settingsReadPending === "true");
+    expect(await field.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key], key)).toBe(saved);
+
+    await releaseSave();
+
+    expect(await field.inputValue()).toBe(String(saved));
+    expect(await field.evaluate((element) => document.activeElement === element)).toBe(true);
+    await field.blur();
+    expect(await field.inputValue()).toBe(String(saved));
+    await options.reload();
+    await expect.poll(() => options.locator(selector).inputValue()).toBe(String(saved));
+  });
+
+  it.each([
+    { section: "service", selector: "#api-model", key: "apiModel", submitted: "  first-model  ", saved: "first-model", draft: "  second-model  ", next: "second-model" },
+    { section: "general", selector: "[data-setting='minParagraphLength']", key: "minParagraphLength", submitted: "999", saved: 200, draft: "998", next: 200 },
+  ])("preserves newer raw $key edits after an Enter commit", async ({ section, selector, key, submitted, saved, draft, next }) => {
+    await options.click(`nav button[data-section='${section}']`);
+    await holdNextSettingsRead();
+    const field = options.locator(selector);
+    await field.fill(submitted);
+    await field.press("Enter");
+    await options.waitForFunction(() => document.documentElement.dataset.settingsReadPending === "true");
+    await field.fill(draft);
+
+    await releaseSave();
+
+    expect(await field.inputValue()).toBe(draft);
+    expect(await field.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key], key)).toBe(saved);
+    await field.blur();
+    await expect.poll(() => worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key], key)).toBe(next);
+    await expect.poll(() => field.inputValue()).toBe(String(next));
+  });
+
+  it("preserves a newer focused checkbox state when an older save returns", async () => {
+    const field = options.locator("[data-setting='translateFullPage']");
+    await holdNextSettingsRead();
+    await field.focus();
+    await field.press("Space");
+    await options.waitForFunction(() => document.documentElement.dataset.settingsReadPending === "true");
+    expect(await field.isChecked()).toBe(true);
+    await field.press("Space");
+    await options.waitForFunction(() => document.querySelector("#save-state")?.classList.contains("visible"));
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get("translateFullPage")).translateFullPage)).toBe(false);
+
+    await releaseSave();
+
+    expect(await field.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await field.isChecked()).toBe(false);
   });
 
   it("keeps the focused range value and its live percentage together", async () => {

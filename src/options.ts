@@ -85,10 +85,16 @@ function showToast(message: string): void {
   toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 2200);
 }
 
-async function persist(patch: Partial<Settings>): Promise<void> {
+async function persist(patch: Partial<Settings>, input?: SettingInput): Promise<void> {
   if (!ready) return;
+  const committedValue = input?.value;
+  const committedChecked = input instanceof HTMLInputElement ? input.checked : undefined;
   settings = await saveSettings(patch);
   render(true);
+  if (input && input === document.activeElement && input.value === committedValue &&
+    (!(input instanceof HTMLInputElement) || input.checked === committedChecked)) {
+    renderInput(input, null);
+  }
   flashSaved();
 }
 
@@ -103,7 +109,7 @@ document.querySelectorAll<HTMLButtonElement>("nav button[data-section]").forEach
   });
 });
 
-settingInputs.forEach((input) => input.addEventListener("change", () => void persist(readInput(input))));
+settingInputs.forEach((input) => input.addEventListener("change", () => void persist(readInput(input), input)));
 excludedSites.addEventListener("change", () => void persist({ excludedSites: excludedSites.value.split("\n").map((site) => site.trim()).filter(Boolean) }));
 fontScale.addEventListener("input", () => {
   fontScaleOutput.value = `${fontScale.value}%`;
