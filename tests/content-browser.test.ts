@@ -998,6 +998,156 @@ describe("in-place translation in a real page", () => {
     await fresh.close();
   });
 
+  it.each(["body", "html"])("releases in-place snapshots when the %s root is removed and translates its replacement", async (tag) => {
+    const fresh = await openInPlace('<p id="copy">Read the guide.</p>');
+    await fresh.evaluate("const add = Set.prototype.add; Set.prototype.add = function(value) { if (value?.element?.id === 'copy') { window.__records = this; window.__record = value; } return add.call(this, value); }; __updateSettings({ translateTitle: false })");
+    await fresh.evaluate("__toggleAsync()");
+    await finished(fresh);
+    expect(await fresh.evaluate("window.__records.size")).toBe(1);
+    await fresh.evaluate((tag) => {
+      const root = document.querySelector(tag);
+      if (!root) throw new Error(`missing ${tag}`);
+      Object.assign(window, { __removedRoot: root });
+      root.remove();
+    }, tag);
+    await fresh.waitForFunction("window.__records.size === 0", undefined, { timeout: 2000, polling: 20 });
+    expect(await fresh.evaluate("window.__record.parts.length")).toBe(0);
+    expect(await fresh.evaluate("window.__removedRoot.querySelector('#copy').textContent")).toBe("Read the guide.");
+    expect(await fresh.evaluate("window.__removedRoot.querySelector('#copy').hasAttribute('data-fanyi-processed')")).toBe(false);
+
+    await fresh.evaluate((tag) => {
+      const root = document.createElement(tag);
+      const body = tag === "body" ? root : root.appendChild(document.createElement("body"));
+      const paragraph = body.appendChild(document.createElement("p"));
+      paragraph.id = "replacement";
+      paragraph.textContent = "Read the replacement page.";
+      (tag === "body" ? document.documentElement : document).appendChild(root);
+    }, tag);
+    await fresh.waitForFunction(() => document.querySelector("#replacement")?.textContent === "译文 Read the replacement page.");
+    expect(await fresh.evaluate("window.__records.size")).toBe(1);
+    await fresh.evaluate("__toggleAsync()");
+    expect(await fresh.locator("#replacement").textContent()).toBe("Read the replacement page.");
+    expect(await fresh.evaluate("window.__records.size")).toBe(0);
+    await fresh.close();
+  });
+
+  it("bounds retained in-place snapshots across repeated paragraph insertion and removal", async () => {
+    const fresh = await openInPlace('<section id="feed"></section><p id="kept">Keep this paragraph.</p>');
+    await fresh.evaluate("const add = Set.prototype.add; Set.prototype.add = function(value) { if (value?.element?.id === 'kept') window.__records = this; return add.call(this, value); }; __updateSettings({ translateTitle: false })");
+    await fresh.evaluate("__toggleAsync()");
+    await finished(fresh);
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      await fresh.locator("#feed").evaluate((feed, cycle) => {
+        for (let index = 0; index < 6; index += 1) {
+          const paragraph = feed.appendChild(document.createElement("p"));
+          paragraph.textContent = `Article ${cycle} paragraph ${index}.`;
+        }
+      }, cycle);
+      await fresh.waitForFunction("window.__records.size === 7");
+      expect(await fresh.locator("#feed p").allTextContents()).toEqual(Array.from({ length: 6 }, (_, index) => `译文 Article ${cycle} paragraph ${index}.`));
+      await fresh.locator("#feed").evaluate((feed) => feed.replaceChildren());
+      await fresh.waitForFunction("window.__records.size === 1");
+      expect(await fresh.locator("#kept").textContent()).toBe("译文 Keep this paragraph.");
+    }
+    await fresh.evaluate("__toggleAsync()");
+    expect(await fresh.evaluate("window.__records.size")).toBe(0);
+    expect(await fresh.locator("#kept").textContent()).toBe("Keep this paragraph.");
+    await fresh.close();
+  });
+
+  it("ignores head and extension-internal changes while monitoring the document", async () => {
+    const fresh = await openInPlace('<p id="copy">Read the guide.</p>');
+    await fresh.evaluate("__toggleAsync()");
+    await finished(fresh);
+    await fresh.evaluate(() => {
+      const query = document.querySelectorAll;
+      const scans = { count: 0 };
+      Object.assign(window, { __scans: scans });
+      document.querySelectorAll = function (selectors: string) {
+        if (selectors.includes("blockquote")) scans.count += 1;
+        return query.call(this, selectors);
+      };
+      const style = document.head.appendChild(document.createElement("style"));
+      style.textContent = "body { color: rgb(12, 34, 56); }";
+      document.title = "Updated website title";
+      const overlay = document.body.appendChild(document.createElement("div"));
+      overlay.dataset.fanyiRoot = "test";
+      overlay.appendChild(document.createElement("p")).textContent = "Extension content.";
+      const notice = document.documentElement.appendChild(document.createElement("div"));
+      notice.className = "fanyi-notice";
+      notice.textContent = "Extension notice.";
+    });
+    await fresh.waitForTimeout(900);
+    expect(await fresh.evaluate("window.__scans.count")).toBe(0);
+    expect(await fresh.locator("#copy").textContent()).toBe("译文 Read the guide.");
+    await fresh.close();
+  });
+
+  it.each(["in-place", "soft"])("cancels a scheduled rescan after body replacement when %s translation is stopped", async (translationStyle) => {
+    const fresh = await openInPlace('<p id="copy">Read the guide.</p>');
+    await fresh.evaluate((translationStyle) => chrome.storage.local.set({ translationStyle }), translationStyle);
+    await fresh.evaluate("__toggleAsync()");
+    await finished(fresh);
+    await fresh.evaluate(() => {
+      const body = document.createElement("body");
+      body.appendChild(document.createElement("p")).textContent = "A replacement article.";
+      document.body.replaceWith(body);
+    });
+    const requests = await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS').length");
+    await fresh.evaluate("__toggleAsync()");
+    await fresh.waitForTimeout(900);
+    expect(await fresh.evaluate("__state()")).toMatchObject({ enabled: false, active: false, translating: false, translatedCount: 0 });
+    expect(await fresh.locator("p").textContent()).toBe("A replacement article.");
+    expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS').length")).toBe(requests);
+    await fresh.close();
+  });
+
+  it.each(["in-place", "soft"])("short-circuits content checks for a burst of added nodes in %s mode", async (translationStyle) => {
+    const fresh = await openInPlace('<p id="copy">Read the guide.</p>');
+    await fresh.evaluate((translationStyle) => chrome.storage.local.set({ translationStyle }), translationStyle);
+    await fresh.evaluate("__toggleAsync()");
+    await finished(fresh);
+    await fresh.evaluate(() => {
+      const closest = Element.prototype.closest;
+      const checks = { count: 0 };
+      Object.assign(window, { __checks: checks });
+      Element.prototype.closest = function (selectors: string) {
+        if (selectors === ".fanyi-translation, .fanyi-notice, [data-fanyi-root]") checks.count += 1;
+        return closest.call(this, selectors);
+      };
+      const site = document.querySelector(".site");
+      if (!site) throw new Error("missing site");
+      for (let index = 0; index < 200; index += 1) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = `New paragraph ${index}.`;
+        site.appendChild(paragraph);
+      }
+    });
+    const checks = await fresh.evaluate<number>("window.__checks.count");
+    expect(checks).toBeGreaterThan(0);
+    expect(checks).toBeLessThanOrEqual(4);
+    await fresh.close();
+  });
+
+  it.each(["in-place", "soft"])("never translates its failure notice during an all-areas rescan in %s mode", async (translationStyle) => {
+    const fresh = await openInPlace('<p id="copy">Read the guide.</p>');
+    await fresh.evaluate((translationStyle) => chrome.storage.local.set({ translationStyle, translateAllAreas: true, translateTitle: false }), translationStyle);
+    await fresh.evaluate("window.__failText = 'Read the guide.'; __toggleAsync()");
+    await fresh.waitForFunction(() => document.querySelector(".fanyi-notice"));
+    await finished(fresh);
+    const notice = await fresh.locator(".fanyi-notice").textContent();
+    expect(notice).toBe("1 个段落翻译失败：request failed on purpose");
+    await fresh.evaluate("window.__notice = document.querySelector('.fanyi-notice'); window.__failText = null; window.__sent.length = 0; document.querySelector('.site').insertAdjacentHTML('beforeend', '<p id=added>Fresh article text.</p>')");
+    await fresh.waitForFunction(() => document.querySelector("#added")?.textContent?.includes("译文 Fresh article text."));
+    expect(await fresh.evaluate("window.__notice.isConnected")).toBe(true);
+    await finished(fresh);
+    expect(await fresh.evaluate("window.__sent.filter(m => m.type === 'TRANSLATE_TEXTS').flatMap(m => m.texts)")).toEqual(["Fresh article text."]);
+    expect(await fresh.evaluate("window.__notice.textContent")).toBe(notice);
+    expect(await fresh.evaluate("window.__notice.hasAttribute('data-fanyi-processed')")).toBe(false);
+    expect(await fresh.evaluate("window.__notice.querySelector('.fanyi-translation')")).toBeNull();
+    await fresh.close();
+  });
+
   it("translates newly inserted paragraphs and only restores text still owned by the extension", async () => {
     const fresh = await openInPlace('<p id="copy">Read the guide.</p><p id="changed">Keep up with the news.</p>');
     await fresh.evaluate("__toggleAsync()");
